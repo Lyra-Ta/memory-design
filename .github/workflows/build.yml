@@ -1,0 +1,49 @@
+name: Test and build plugin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build:plugin
+      - name: Commit rebuilt plugin when changed
+        run: |
+          if git diff --quiet -- dist/index.js; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/index.js
+          git commit -m "build: update bundled plugin"
+          git push
+      - name: Purge jsDelivr CDN cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="/gh/Lyra-Ta/memory-design@main/dist/index.js"
+          url="https://purge.jsdelivr.net${path}"
+          echo "Purging $url"
+          response="$(curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors --max-time 30 "$url")"
+          printf '%s\n' "$response" | jq .
+          jq -e --arg path "$path" '
+            .status == "finished"
+            and (.paths[$path].throttled == false)
+            and ((.paths[$path].providers | to_entries | length) > 0)
+            and all(.paths[$path].providers[]; . == true)
+          ' <<<"$response" >/dev/null

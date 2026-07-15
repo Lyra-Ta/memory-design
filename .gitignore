@@ -1,0 +1,6 @@
+node_modules/
+preview/*.js
+preview/*.png
+*.log
+.DS_Store
+# 保留 dist/index.js（jsDelivr / 静态托管直接取它），其余构建产物忽略
