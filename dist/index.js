@@ -30,6 +30,29 @@
     };
   }
 
+  // src/core/summary-trigger.ts
+  var DEFAULT_SUMMARY_INTERVAL = 50;
+  var MIN_SUMMARY_INTERVAL = 20;
+  function normalizeSummaryInterval(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_SUMMARY_INTERVAL;
+    return Math.max(MIN_SUMMARY_INTERVAL, Math.floor(value));
+  }
+  function computeSummaryTriggerState(params) {
+    const interval = normalizeSummaryInterval(params.interval);
+    const anchor = params.latestArchiveFloor;
+    const distance = anchor === null ? Math.max(0, params.currentFloor + 1) : Math.max(0, params.currentFloor - anchor);
+    const eligible = distance >= interval;
+    const reminded = params.lastRemindedFloor;
+    const reminderWindowPassed = reminded === null || params.currentFloor - reminded >= interval;
+    return {
+      interval,
+      distance,
+      eligible,
+      shouldRemind: eligible && reminderWindowPassed,
+      nextFloor: anchor === null ? interval - 1 : anchor + interval
+    };
+  }
+
   // src/plugin/orchestration.ts
   var HISTORICAL_PLACEHOLDER = "{{HISTORICAL_CONTEXT}}";
   var GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
@@ -193,9 +216,137 @@ ${value}`;
     return prompts;
   }
 
+  // src/plugin/summary-orchestration.ts
+  var SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER = "{{ARCHIVE_CONTEXT}}";
+  var SUMMARY_TARGET_FLUX_PLACEHOLDER = "{{TARGET_FLUX}}";
+  var SUMMARY_GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
+  var PRE = `你是一个「阶段性编年审计器」。世界与剧情演绎在本次调用中暂停；唯一任务是把本轮尚未归档的 Flux 可逆压缩成一份普通世界档案。
+
+<Input_Contract>
+- <Archive_Context> 与 <Target_Flux> 都是只读记录；只能读取、比对和据此生成新档，不得改写或补全输入本身。
+- <Archive_Context> 是已经归档的只读历史背景，只用于校准人物、前因与连续性。不得复述、改写、再次总结或把其中旧事件写进本轮输出。
+- <Target_Flux> 是本轮唯一允许总结的事实源。输出中的每一项事实都必须能在其中找到依据。
+- <Guidance> 若存在，只能调整本轮信息取舍的关注点；不得覆盖事实保真、来源边界或输出格式。
+</Input_Contract>
+
+<Audit_Rules>
+- 不创作、不补全、不预测、不评价，不把具体动作或物体抽象成状态、性格、关系标签或总结性心理判断。
+- 只保留原文明示的事实、因果、心理与情绪；不得从 Archive Context 推导出 Target Flux 没有发生的内容。
+- 按下列优先级取舍：
+  P0（必须保留）：明确改变人物关系、情感走向或行动方向的原文明示因果；关键对白原句；明确物理行为；局势、常驻位置、人物加入或退场等事实变化。
+  P1（按连贯性选留）：触发原文明示情绪变化的感官锚点及对应情绪；少量有因果作用的停顿、视线等微动作。
+  P2（默认删除）：连续环境铺陈；重复或弱相关五感；不承载事实与因果的修辞、文学风格句。
+- 与性相关的描写只需客观概括发生了什么，不保留具体性行为细节。
+</Audit_Rules>
+
+<Output_Contract>
+- 正式结果必须且只能是一份普通、无 archived marker 的 <World_Archive>…</World_Archive>。
+- 档案由一个或多个扁平事件段组成，不使用《容器》：
+  [事件标题|约3个情绪/感知关键词|起止时间]
+  按客观发生顺序写成连贯总结。
+- 不在档案前后添加解释，不输出 <!-- archived: ... -->、old_ 或 pending 标签。
+</Output_Contract>`;
+  var RUNTIME = `<Archive_Context>
+${SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER}
+</Archive_Context>
+
+<Target_Flux>
+${SUMMARY_TARGET_FLUX_PLACEHOLDER}
+</Target_Flux>
+
+${SUMMARY_GUIDANCE_PLACEHOLDER}`;
+  var POST2 = `<Audit_Procedure>
+在正式输出前，使用 <inner_flow>…</inner_flow> 完成以下审计；不得在其中虚构事实：
+
+1. 输入核对
+   - 确认 Archive Context 只作连续性参照，列明 Target Flux 的首尾、顺序与核心事件逻辑。
+   - 标出任何只能来自 Archive Context、因而绝不能复述进新档的旧事件。
+
+2. 自然分段
+   - 优先按物理空间转移、显著时间跨度、事件因果闭合或高张力高密度互动切分。
+   - “每段最多 3 个 Flux”只作防止过度合并的兜底上限；即使未满 3 个，遇到自然断点也立即另起事件段。
+
+3. 逐段萃取
+   - 逐段列出 P0；仅为保证人物在场、动作承接与因果连贯补入必要 P1；删除 P2。
+   - 核对关键对白、动作、事实变化均未被抽象评价替代，且没有从 Archive Context 偷渡旧事实。
+
+4. 可逆性自检
+   - 假设 Target Flux 消失，仅看候选 Archive，是否仍能还原本轮关键行动的先后与因果、人物在本轮结束时的明确状态？
+   - 若不能，回到对应事件段补足必要 P0/P1；若出现 Target Flux 无依据的信息，立即删除。
+</Audit_Procedure>
+
+完成 </inner_flow> 后，只输出一个符合 <Output_Contract> 的 <World_Archive>，不要附加解释。`;
+  function defaultSummaryOrchestration() {
+    return [
+      { id: "pre", label: "前置定义", role: "system", kind: "static", content: PRE, enabled: true },
+      { id: "runtime", label: "运行时填入", role: "user", kind: "runtime", content: RUNTIME, enabled: true },
+      { id: "post", label: "后置思考与输出", role: "system", kind: "static", content: POST2, enabled: true }
+    ];
+  }
+  function summaryPromptFingerprint(content) {
+    let hash = 2166136261;
+    for (let i = 0; i < content.length; i++) {
+      hash ^= content.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a:${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  }
+  function makeSummaryOrchestrationOverride(content, baseContent) {
+    return { content, baseHash: summaryPromptFingerprint(baseContent) };
+  }
+  function resolveSummaryOrchestration(overrides) {
+    return defaultSummaryOrchestration().map((entry) => {
+      const override = overrides[entry.id];
+      return override ? { ...entry, content: override.content } : entry;
+    });
+  }
+  function fillOrAppend(template, placeholder, value, fallback) {
+    if (template.includes(placeholder)) return template.split(placeholder).join(value);
+    return `${template.trimEnd()}
+
+${fallback}`;
+  }
+  function fillRuntime(template, input) {
+    let content = fillOrAppend(
+      template,
+      SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER,
+      input.archiveContext,
+      `<Archive_Context>
+${input.archiveContext}
+</Archive_Context>`
+    );
+    content = fillOrAppend(
+      content,
+      SUMMARY_TARGET_FLUX_PLACEHOLDER,
+      input.targetFlux,
+      `<Target_Flux>
+${input.targetFlux}
+</Target_Flux>`
+    );
+    const guidance = input.guidance?.trim() ?? "";
+    const guidanceBlock = guidance ? `<Guidance>
+${guidance}
+</Guidance>` : "";
+    if (content.includes(SUMMARY_GUIDANCE_PLACEHOLDER)) {
+      content = content.split(SUMMARY_GUIDANCE_PLACEHOLDER).join(guidanceBlock);
+    } else if (guidanceBlock) {
+      content = `${content.trimEnd()}
+
+${guidanceBlock}`;
+    }
+    return content.trim();
+  }
+  function assembleSummaryPrompt(entries, input) {
+    return entries.flatMap((entry) => {
+      if (!entry.enabled) return [];
+      const content = entry.kind === "runtime" ? fillRuntime(entry.content, input) : entry.content;
+      return [{ role: entry.role, content }];
+    });
+  }
+
   // src/plugin/config.ts
   var CONFIG_KEY = "memoryArchiver";
-  var CONFIG_VERSION = 5;
+  var CONFIG_VERSION = 7;
   var LEGACY_DEFAULT_PROMPT_HASHES = {
     skeleton: ["fnv1a:2088:eeafee11"],
     historical_context: ["fnv1a:75:492c7d5d"],
@@ -212,7 +363,13 @@ ${value}`;
       lastDismissedFloor: null,
       connectionProfileId: null,
       modelHint: "任务较复杂，推荐 Gemini 等智商尚可的模型就够。",
-      orchestrationOverrides: {}
+      orchestrationOverrides: {},
+      summaryInterval: DEFAULT_SUMMARY_INTERVAL,
+      summaryPlaceholderFloor: null,
+      summaryLastRemindedFloor: null,
+      summaryOrchestrationOverrides: {},
+      timelineEnabled: true,
+      summaryEnabled: true
     };
   }
   function isRecord(value) {
@@ -222,6 +379,17 @@ ${value}`;
     if (!isRecord(raw)) return {};
     const overrides = {};
     const knownIds = new Set(defaultOrchestration().map((entry) => entry.id));
+    for (const [id, value] of Object.entries(raw)) {
+      if (!knownIds.has(id)) continue;
+      if (!isRecord(value) || typeof value.content !== "string" || typeof value.baseHash !== "string") continue;
+      overrides[id] = { content: value.content, baseHash: value.baseHash };
+    }
+    return overrides;
+  }
+  function coerceSummaryOverrides(raw) {
+    if (!isRecord(raw)) return {};
+    const overrides = {};
+    const knownIds = new Set(defaultSummaryOrchestration().map((entry) => entry.id));
     for (const [id, value] of Object.entries(raw)) {
       if (!knownIds.has(id)) continue;
       if (!isRecord(value) || typeof value.content !== "string" || typeof value.baseHash !== "string") continue;
@@ -276,7 +444,13 @@ ${value}`;
       lastDismissedFloor: typeof raw.lastDismissedFloor === "number" ? raw.lastDismissedFloor : null,
       connectionProfileId: typeof raw.connectionProfileId === "string" ? raw.connectionProfileId : null,
       modelHint: typeof raw.modelHint === "string" ? raw.modelHint : d.modelHint,
-      orchestrationOverrides: { ...migrated, ...explicit }
+      orchestrationOverrides: { ...migrated, ...explicit },
+      summaryInterval: normalizeSummaryInterval(raw.summaryInterval),
+      summaryPlaceholderFloor: typeof raw.summaryPlaceholderFloor === "number" && Number.isInteger(raw.summaryPlaceholderFloor) ? raw.summaryPlaceholderFloor : null,
+      summaryLastRemindedFloor: typeof raw.summaryLastRemindedFloor === "number" && Number.isInteger(raw.summaryLastRemindedFloor) ? raw.summaryLastRemindedFloor : null,
+      summaryOrchestrationOverrides: coerceSummaryOverrides(raw.summaryOrchestrationOverrides),
+      timelineEnabled: typeof raw.timelineEnabled === "boolean" ? raw.timelineEnabled : d.timelineEnabled,
+      summaryEnabled: typeof raw.summaryEnabled === "boolean" ? raw.summaryEnabled : d.summaryEnabled
     };
   }
   function asGlobalSeed(cfg) {
@@ -285,7 +459,10 @@ ${value}`;
       boundary: 0,
       lastKnownFloor: null,
       lastDismissedFloor: null,
-      orchestrationOverrides: { ...cfg.orchestrationOverrides }
+      orchestrationOverrides: { ...cfg.orchestrationOverrides },
+      summaryPlaceholderFloor: null,
+      summaryLastRemindedFloor: null,
+      summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides }
     };
   }
   function loadConfig(deps) {
@@ -303,7 +480,13 @@ ${value}`;
   }
   function saveConfig(deps, cfg) {
     deps.insertOrAssignVariables(
-      { [CONFIG_KEY]: { ...cfg, orchestrationOverrides: { ...cfg.orchestrationOverrides } } },
+      {
+        [CONFIG_KEY]: {
+          ...cfg,
+          orchestrationOverrides: { ...cfg.orchestrationOverrides },
+          summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides }
+        }
+      },
       { type: "chat" }
     );
   }
@@ -312,10 +495,80 @@ ${value}`;
     deps.insertOrAssignVariables({ [CONFIG_KEY]: seed }, { type: "global" });
   }
 
+  // src/plugin/chat-events.ts
+  function bindChatActivityMonitor(options) {
+    const debounceMs = options.debounceMs ?? 200;
+    let activeChatIdentity = options.initialChatIdentity;
+    let headTimer = null;
+    let scanTimer = null;
+    let destroyed = false;
+    const clearHeadTimer = () => {
+      if (headTimer === null) return;
+      clearTimeout(headTimer);
+      headTimer = null;
+    };
+    const clearScanTimer = () => {
+      if (scanTimer === null) return;
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    };
+    const scheduleHead = () => {
+      if (destroyed || scanTimer !== null) return;
+      clearHeadTimer();
+      headTimer = setTimeout(() => {
+        headTimer = null;
+        if (destroyed) return;
+        options.onHeadActivity(options.state.syncHead());
+      }, debounceMs);
+    };
+    const scheduleScan = () => {
+      if (destroyed) return;
+      clearHeadTimer();
+      clearScanTimer();
+      scanTimer = setTimeout(() => {
+        scanTimer = null;
+        if (destroyed) return;
+        const head = options.state.syncHead();
+        options.onArchiveInvalidated(options.state.scan(head));
+      }, debounceMs);
+    };
+    const subscriptions = [
+      options.eventOn(options.events.MESSAGE_SENT, scheduleHead),
+      options.eventOn(options.events.MESSAGE_RECEIVED, scheduleHead),
+      options.eventOn(options.events.MESSAGE_DELETED, scheduleScan),
+      options.eventOn(options.events.MESSAGE_UPDATED, scheduleScan),
+      options.eventOn(options.events.MESSAGE_SWIPED, scheduleScan),
+      options.eventOn(options.events.CHAT_CHANGED, (chatFileName) => {
+        const eventIdentity = typeof chatFileName === "string" && chatFileName ? chatFileName : options.getCurrentChatIdentity();
+        if (eventIdentity && eventIdentity === activeChatIdentity) {
+          options.state.markDirty();
+          scheduleScan();
+          return;
+        }
+        activeChatIdentity = eventIdentity;
+        clearHeadTimer();
+        clearScanTimer();
+        options.state.reset(eventIdentity);
+        options.onChatChanged(eventIdentity);
+      })
+    ];
+    return {
+      destroy() {
+        if (destroyed) return;
+        destroyed = true;
+        clearHeadTimer();
+        clearScanTimer();
+        for (const subscription of subscriptions) subscription.stop();
+      }
+    };
+  }
+
   // src/plugin/reminder.ts
   var REMINDER_EVENT_FALLBACKS = {
     MESSAGE_SENT: "message_sent",
     MESSAGE_RECEIVED: "message_received",
+    MESSAGE_UPDATED: "message_updated",
+    MESSAGE_SWIPED: "message_swiped",
     CHAT_CHANGED: "chat_id_changed",
     MESSAGE_DELETED: "message_deleted"
   };
@@ -327,6 +580,8 @@ ${value}`;
     return {
       MESSAGE_SENT: value("MESSAGE_SENT"),
       MESSAGE_RECEIVED: value("MESSAGE_RECEIVED"),
+      MESSAGE_UPDATED: value("MESSAGE_UPDATED"),
+      MESSAGE_SWIPED: value("MESSAGE_SWIPED"),
       CHAT_CHANGED: value("CHAT_CHANGED"),
       MESSAGE_DELETED: value("MESSAGE_DELETED")
     };
@@ -338,6 +593,145 @@ ${value}`;
       currentFloor: params.currentFloor,
       from: trigger.range.from,
       through: trigger.range.to
+    };
+  }
+  function buildSummaryReminderNotice(params, trigger = computeSummaryTriggerState(params)) {
+    if (!trigger.shouldRemind) return null;
+    return {
+      currentFloor: params.currentFloor,
+      distance: trigger.distance
+    };
+  }
+  function buildReminderDecision(params) {
+    const timeline = params.timelineEnabled === false ? null : buildReminderNotice(params.timeline);
+    if (timeline) return { kind: "timeline", notice: timeline };
+    const summary = params.summaryEnabled === false ? null : buildSummaryReminderNotice(params.summary, params.summaryTrigger);
+    return summary ? { kind: "summary", notice: summary } : null;
+  }
+
+  // src/plugin/regex-controller.ts
+  var FLUX_WINDOW_REGEX_ID = "1a7548c3-d1c5-4fc2-8955-1933510e164c";
+  var ARCHIVE_ONLY_REGEX_ID = "dd0c4c41-36dd-4c99-87bc-6e77eec4252e";
+  var PRESET_TARGET = { type: "preset", name: "in_use" };
+  var FLUX_MIN_DEPTH = 11;
+  var FLUX_DEFAULT_MAX_DEPTH = 50;
+  function createRegexDepthController(options) {
+    const updateRegexes = options.updateTavernRegexesWith;
+    const warn = options.warn ?? ((message, error) => {
+      if (error === void 0) console.warn(message);
+      else console.warn(message, error);
+    });
+    let appliedW = null;
+    let activeW = null;
+    let pendingW = null;
+    let running = null;
+    let destroyed = false;
+    let warnedMissingApi = false;
+    let lastMissingIds = "";
+    const report = (message, error) => {
+      try {
+        warn(message, error);
+      } catch {
+      }
+    };
+    const applyWindow = async (w) => {
+      if (!updateRegexes) {
+        if (!warnedMissingApi) {
+          warnedMissingApi = true;
+          report("缺少运行时 API updateTavernRegexesWith，已跳过 preset/in_use 正则深度同步");
+        }
+        return false;
+      }
+      let foundFlux = false;
+      let foundArchiveOnly = false;
+      try {
+        await updateRegexes(
+          (regexes) => {
+            for (const regex of regexes) {
+              if (regex.id === FLUX_WINDOW_REGEX_ID) {
+                foundFlux = true;
+                regex.min_depth = FLUX_MIN_DEPTH;
+                regex.max_depth = w;
+              } else if (regex.id === ARCHIVE_ONLY_REGEX_ID) {
+                foundArchiveOnly = true;
+                regex.min_depth = w + 1;
+                regex.max_depth = null;
+              }
+            }
+            return regexes;
+          },
+          PRESET_TARGET
+        );
+      } catch (error) {
+        report(`更新 preset/in_use 正则深度失败（W=${w}）`, error);
+        return false;
+      }
+      const missingIds = [
+        ...!foundFlux ? [FLUX_WINDOW_REGEX_ID] : [],
+        ...!foundArchiveOnly ? [ARCHIVE_ONLY_REGEX_ID] : []
+      ];
+      const missingKey = missingIds.join(",");
+      if (missingKey && missingKey !== lastMissingIds) {
+        report(`preset/in_use 缺少固定正则 UUID：${missingIds.join("、")}`);
+      }
+      lastMissingIds = missingKey;
+      return true;
+    };
+    const drain = async () => {
+      while (!destroyed && pendingW !== null) {
+        const w = pendingW;
+        pendingW = null;
+        if (w === appliedW) continue;
+        activeW = w;
+        const applied = await applyWindow(w);
+        activeW = null;
+        appliedW = applied ? w : null;
+      }
+    };
+    const startDrain = () => {
+      if (destroyed || running !== null || pendingW === null) return;
+      const task = drain().catch((error) => {
+        activeW = null;
+        report("正则深度同步控制器发生未预期错误", error);
+      });
+      running = task;
+      void task.then(() => {
+        if (running !== task) return;
+        running = null;
+        if (!destroyed && pendingW !== null) startDrain();
+      });
+    };
+    return {
+      request(window2) {
+        if (destroyed) return;
+        const w = window2.fluxMaxDepth;
+        if (!Number.isSafeInteger(w) || w < 0) {
+          report(`收到无效的正则深度桶 W=${String(w)}，已跳过`);
+          return;
+        }
+        if (activeW === null && pendingW === null && w === appliedW) return;
+        if (w === pendingW) return;
+        pendingW = w;
+        startDrain();
+      },
+      restoreDefault() {
+        if (destroyed) return;
+        pendingW = FLUX_DEFAULT_MAX_DEPTH;
+        startDrain();
+      },
+      async flush() {
+        while (true) {
+          startDrain();
+          const task = running;
+          if (!task) return;
+          await task;
+          await Promise.resolve();
+        }
+      },
+      destroy() {
+        destroyed = true;
+        pendingW = null;
+      }
     };
   }
 
@@ -703,6 +1097,144 @@ ${CLOSE[gen]}`;
     return { ok: !issues.some((i) => i.severity === "hard"), issues, block, containers };
   }
 
+  // src/core/summary-format.ts
+  function tokenIndices(text, token) {
+    const indices = [];
+    for (let i = text.indexOf(token); i !== -1; i = text.indexOf(token, i + token.length)) {
+      indices.push(i);
+    }
+    return indices;
+  }
+  function htmlCommentSpans(text) {
+    const spans = [];
+    const re = /<!--[\s\S]*?-->/g;
+    for (let match = re.exec(text); match !== null; match = re.exec(text)) {
+      spans.push([match.index, match.index + match[0].length]);
+    }
+    return spans;
+  }
+  function blocksForTag(text, tag) {
+    const open = `<${tag}>`;
+    const close = `</${tag}>`;
+    const opens = tokenIndices(text, open);
+    const closes = tokenIndices(text, close);
+    const blocks = [];
+    let consumedThrough = -1;
+    for (const closeAt of closes) {
+      let openAt = -1;
+      for (const candidate of opens) {
+        if (candidate >= closeAt) break;
+        if (candidate > consumedThrough) openAt = candidate;
+      }
+      if (openAt < 0) continue;
+      const end = closeAt + close.length;
+      blocks.push({
+        tag,
+        raw: text.slice(openAt, end),
+        inner: text.slice(openAt + open.length, closeAt).trim(),
+        span: [openAt, end]
+      });
+      consumedThrough = closeAt;
+    }
+    return blocks;
+  }
+  function extractFluxBlocks(text) {
+    const comments = htmlCommentSpans(text);
+    return [...blocksForTag(text, "Flux"), ...blocksForTag(text, "Causal_Flux")].filter((block) => !comments.some(([start, end]) => block.span[0] >= start && block.span[1] <= end)).sort((a, b) => a.span[0] - b.span[0]);
+  }
+  function collectTargetFlux(messages, x, sourceThrough) {
+    const lowerExclusive = x ?? Number.NEGATIVE_INFINITY;
+    const blocks = [];
+    for (const message of messages) {
+      if (message.message_id <= lowerExclusive || message.message_id > sourceThrough) continue;
+      for (const block of extractFluxBlocks(message.message)) {
+        blocks.push({ ...block, floor: message.message_id });
+      }
+    }
+    return blocks.sort((a, b) => a.floor - b.floor || a.span[0] - b.span[0]);
+  }
+  function hard2(code, message, extra) {
+    return { severity: "hard", code, message, ...extra };
+  }
+  function soft2(code, message, extra) {
+    return { severity: "soft", code, message, ...extra };
+  }
+  var FLAT_SEGMENT_LINE = /^\[\s*([^\[\]]*?)\s*\]$/;
+  function hasMeaningfulSummary(segment) {
+    return segment.summary.split("\n").some((rawLine) => {
+      const line = rawLine.trim();
+      if (!line) return false;
+      return !(line.startsWith("[") && !FLAT_SEGMENT_LINE.test(line));
+    });
+  }
+  function validateSummaryArchive(text) {
+    const issues = [];
+    const open = `<${TAG}>`;
+    const close = `</${TAG}>`;
+    const lastOpen = text.lastIndexOf(open);
+    const lastClose = text.lastIndexOf(close);
+    const hasOpen = lastOpen >= 0;
+    const block = lastOpen > lastClose ? null : extractLastArchiveBlock(text, "live");
+    if (!block) {
+      issues.push(
+        hasOpen ? hard2("SHELL_UNCLOSED", `${open} 外壳未闭合（缺 ${close}）`) : hard2("SHELL_MISSING", `缺少 ${open}…${close} 外壳`)
+      );
+      return { ok: false, issues, block: null, nodes: [], segments: [] };
+    }
+    if (extractCoverageMarkers(block.raw).length > 0) {
+      issues.push(hard2("ARCHIVED_MARKER_FORBIDDEN", "普通 Archive 不得包含 archived 覆盖标记"));
+    }
+    for (const rawLine of stripComments(block.inner).split("\n")) {
+      const line = rawLine.trim();
+      if (line.startsWith("[") && !FLAT_SEGMENT_LINE.test(line)) {
+        issues.push(soft2("SEGMENT_TOKEN_BROKEN", `事件段标题 token 疑似不完整：「${line}」`));
+      }
+    }
+    const nodes = parseArchiveBody(block.inner);
+    const segments = nodes.filter((node) => node.kind === "segment");
+    const containers = nodes.filter((node) => node.kind === "container");
+    if (segments.length === 0) {
+      issues.push(hard2("NO_SEGMENT", "外壳内无任何普通扁平事件段 []"));
+    }
+    if (containers.length > 0) {
+      issues.push(soft2("CONTAINER_UNEXPECTED", "普通 Archive 应使用扁平事件段 []，不需要《容器》"));
+    }
+    segments.forEach((segment) => {
+      const index = nodes.indexOf(segment);
+      if (!hasMeaningfulSummary(segment)) {
+        issues.push(
+          hard2("SEGMENT_SUMMARY_EMPTY", `事件段[${segment.title || "?"}]缺总结正文`, {
+            containerIndex: index
+          })
+        );
+      }
+      if (!segment.title.trim()) {
+        issues.push(soft2("SEGMENT_TITLE_MISSING", "事件段标题为空", { containerIndex: index }));
+      }
+      if (segment.keywords === null) {
+        issues.push(
+          soft2("SEGMENT_KEYWORDS_MISSING", `事件段[${segment.title || "?"}]缺情绪/感知关键词字段`, {
+            containerIndex: index
+          })
+        );
+      }
+      if (segment.time === null) {
+        issues.push(
+          soft2("SEGMENT_TIME_MISSING", `事件段[${segment.title || "?"}]缺起止时间字段`, {
+            containerIndex: index
+          })
+        );
+      }
+    });
+    return {
+      ok: !issues.some((issue) => issue.severity === "hard"),
+      issues,
+      block,
+      nodes,
+      segments
+    };
+  }
+
   // src/core/locator.ts
   function pairMarkers(text, blocks, markers) {
     const remaining = markers.slice();
@@ -748,6 +1280,14 @@ ${CLOSE[gen]}`;
   }
   function liveEntries(table) {
     return table.filter((e) => e.generation === "live");
+  }
+  function latestLiveArchiveFloor(table) {
+    let latest = null;
+    for (const entry of table) {
+      if (entry.generation !== "live") continue;
+      if (latest === null || entry.messageId > latest) latest = entry.messageId;
+    }
+    return latest;
   }
   function totalLiveSize(table) {
     return liveEntries(table).reduce((sum, e) => sum + e.size, 0);
@@ -1050,6 +1590,133 @@ ${pendingBlock}`;
     return next;
   }
 
+  // src/plugin/regex-window.ts
+  var RAW_CONTEXT_DEPTH = 10;
+  var REGEX_DEPTH_STEP = 10;
+  var INITIAL_FLUX_DEPTH = 50;
+  function roundDepthUp(depth) {
+    return Math.ceil(depth / REGEX_DEPTH_STEP) * REGEX_DEPTH_STEP;
+  }
+  function computeRegexDepthWindow(params) {
+    const { currentFloor: q, latestArchiveFloor: x } = params;
+    const unarchivedDepth = x === null ? q + 1 : Math.max(0, q - x);
+    const minimumFluxDepth = x === null ? INITIAL_FLUX_DEPTH : RAW_CONTEXT_DEPTH;
+    const fluxMaxDepth = Math.max(minimumFluxDepth, roundDepthUp(unarchivedDepth));
+    return {
+      unarchivedDepth,
+      rawMaxDepth: RAW_CONTEXT_DEPTH,
+      fluxMinDepth: RAW_CONTEXT_DEPTH + 1,
+      fluxMaxDepth,
+      archiveOnlyMinDepth: fluxMaxDepth + 1
+    };
+  }
+
+  // src/plugin/chat-state.ts
+  var ChatStateReader = class {
+    constructor(deps) {
+      __publicField(this, "deps", deps);
+      __publicField(this, "chatIdentity", null);
+      __publicField(this, "head", null);
+      __publicField(this, "latestArchiveFloor", null);
+      __publicField(this, "revision", 0);
+      __publicField(this, "chatEpoch", 0);
+    }
+    peekHead() {
+      return this.head;
+    }
+    currentChatEpoch() {
+      return this.chatEpoch;
+    }
+    isCurrentChatEpoch(expected) {
+      return expected === this.chatEpoch;
+    }
+    /** 真正切换聊天时忘掉旧 head；下次读取属于新聊天。 */
+    reset(chatIdentity) {
+      this.chatIdentity = chatIdentity;
+      this.head = null;
+      this.latestArchiveFloor = null;
+      this.chatEpoch += 1;
+      this.revision += 1;
+    }
+    /**
+     * 标记“q 未必变，但聊天正文/档案索引已可能变化”。
+     * 在权威扫描完成前保守忘掉 x：正则窗口会扩大为“尚无 x”，宁可多留上下文也不误裁 Flux。
+     */
+    markDirty() {
+      this.latestArchiveFloor = null;
+      this.revision += 1;
+      if (this.head) {
+        this.head = {
+          ...this.head,
+          latestLiveArchiveFloor: null,
+          regexWindow: computeRegexDepthWindow({
+            currentFloor: this.head.currentFloor,
+            latestArchiveFloor: null
+          }),
+          revision: this.revision
+        };
+      }
+    }
+    /** 全插件读取 q 的唯一入口。 */
+    syncHead() {
+      const currentFloor = this.deps.getLastMessageId();
+      if (this.head && this.head.chatIdentity === this.chatIdentity && this.head.currentFloor === currentFloor) {
+        return this.head;
+      }
+      this.revision += 1;
+      this.head = {
+        chatIdentity: this.chatIdentity,
+        chatEpoch: this.chatEpoch,
+        currentFloor,
+        latestLiveArchiveFloor: this.latestArchiveFloor,
+        regexWindow: computeRegexDepthWindow({
+          currentFloor,
+          latestArchiveFloor: this.latestArchiveFloor
+        }),
+        revision: this.revision
+      };
+      return this.head;
+    }
+    /**
+     * 按已经取得的 head 建一张权威表，不再读 q。
+     * 消息删除/同聊天正文变更的事件点可用此保证“一个事件批次一次 q”。
+     */
+    scan(head = this.syncHead()) {
+      if (head.chatIdentity !== this.chatIdentity || head.chatEpoch !== this.chatEpoch) {
+        throw new Error("聊天已切换，拒绝使用旧的楼层快照");
+      }
+      const messages = this.deps.getChatMessages(`0-${head.currentFloor}`);
+      const table = buildLocatorTable(messages);
+      const latestArchiveFloor = latestLiveArchiveFloor(table);
+      if (latestArchiveFloor !== this.latestArchiveFloor) {
+        this.latestArchiveFloor = latestArchiveFloor;
+        this.revision += 1;
+      }
+      const resolvedHead = {
+        chatIdentity: head.chatIdentity,
+        chatEpoch: head.chatEpoch,
+        currentFloor: head.currentFloor,
+        latestLiveArchiveFloor: latestArchiveFloor,
+        regexWindow: computeRegexDepthWindow({
+          currentFloor: head.currentFloor,
+          latestArchiveFloor
+        }),
+        revision: this.revision
+      };
+      this.head = resolvedHead;
+      return {
+        ...resolvedHead,
+        messages,
+        table,
+        derivedBoundary: deriveBoundary(table)
+      };
+    }
+    /** 操作边界的新鲜快照：一次 q + 一次 0-q 扫描。 */
+    scanFresh() {
+      return this.scan(this.syncHead());
+    }
+  };
+
   // src/plugin/session.ts
   var GENERATION_TIMEOUT_MS = 5 * 60 * 1e3;
   var GenerationCancelledError = class extends Error {
@@ -1065,32 +1732,54 @@ ${pendingBlock}`;
       this.name = "GenerationTimeoutError";
     }
   };
+  var ChatChangedDuringOperationError = class extends Error {
+    constructor() {
+      super("聊天已切换，已停止旧聊天的操作，未继续写入当前聊天");
+      this.name = "ChatChangedDuringOperationError";
+    }
+  };
   var ArchiverSession = class {
-    constructor(deps, config, generationTimeoutMs = GENERATION_TIMEOUT_MS) {
+    constructor(deps, config, generationTimeoutMs = GENERATION_TIMEOUT_MS, chatState) {
       __publicField(this, "deps", deps);
       __publicField(this, "config", config);
       __publicField(this, "generationTimeoutMs", generationTimeoutMs);
       __publicField(this, "phase", "idle");
       __publicField(this, "activeGeneration", null);
       __publicField(this, "generationSequence", 0);
+      __publicField(this, "featureEnablementListeners", /* @__PURE__ */ new Set());
+      /** 当前普通总结的冻结来源；首次失败后仍保留，供同一批来源重试。 */
+      __publicField(this, "summaryRound", null);
+      /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
+      __publicField(this, "chatState");
+      this.chatState = chatState ?? new ChatStateReader(deps);
     }
-    get lastFloor() {
-      return this.deps.getLastMessageId();
+    assertCurrentChat(expectedEpoch) {
+      if (!this.chatState.isCurrentChatEpoch(expectedEpoch)) {
+        throw new ChatChangedDuringOperationError();
+      }
     }
-    /** 每次生成/提交都重新读取，不能把 UI 预览快照当作并发控制。 */
-    currentTable() {
-      const q = this.lastFloor;
-      return buildLocatorTable(this.deps.getChatMessages(`0-${q}`));
+    /** 两段提交的每次读写都在同步调用点复核聊天世代；写 await 返回后再复核一次。 */
+    guardedCommitDeps(expectedEpoch) {
+      return {
+        getChatMessages: (range) => {
+          this.assertCurrentChat(expectedEpoch);
+          return this.deps.getChatMessages(range);
+        },
+        setChatMessages: async (messages, option) => {
+          this.assertCurrentChat(expectedEpoch);
+          await this.deps.setChatMessages(messages, option);
+          this.assertCurrentChat(expectedEpoch);
+        }
+      };
     }
     // ---- 刷新（只读，任何时候可调） -------------------------------------------
-    refresh() {
-      const q = this.lastFloor;
+    refresh(read = this.chatState.scanFresh()) {
+      const q = read.currentFloor;
       const previousFloor = this.config.lastKnownFloor;
       const p = previousFloor ?? q;
       const floorsDecreased = q < p;
-      const msgs = this.deps.getChatMessages(`0-${q}`);
-      const table = buildLocatorTable(msgs);
-      const boundary = deriveBoundary(table) ?? this.config.boundary ?? 0;
+      const table = read.table;
+      const boundary = read.derivedBoundary ?? this.config.boundary ?? 0;
       const interrupted = detectInterruptedCommit(table);
       const commitLog = loadCommitLog(this.deps);
       const integrity = this.integrityCheck(table);
@@ -1100,6 +1789,12 @@ ${pendingBlock}`;
         n: this.config.n,
         lastDismissedFloor: this.config.lastDismissedFloor
       });
+      const summaryTrigger = computeSummaryTriggerState({
+        currentFloor: q,
+        latestArchiveFloor: read.latestLiveArchiveFloor,
+        interval: this.config.summaryInterval,
+        lastRemindedFloor: this.config.summaryLastRemindedFloor
+      });
       if (!floorsDecreased && !interrupted.length && !integrity.needed && previousFloor !== q) {
         this.config.lastKnownFloor = q;
         this.persist();
@@ -1108,6 +1803,9 @@ ${pendingBlock}`;
         table,
         previousFloor,
         currentFloor: q,
+        latestLiveArchiveFloor: read.latestLiveArchiveFloor,
+        regexWindow: read.regexWindow,
+        summaryTrigger,
         boundary,
         trigger,
         interrupted,
@@ -1127,7 +1825,9 @@ ${pendingBlock}`;
     }
     /** 执行复原：把这些退役 old_ 块改回 live（顺序落盘）。 */
     async integrityRestore(toRestore) {
-      if (detectInterruptedCommit(this.currentTable()).length > 0) {
+      const read = this.chatState.scanFresh();
+      const chatEpoch = read.chatEpoch;
+      if (detectInterruptedCommit(read.table).length > 0) {
         throw new Error("检测到未完成的归档提交；必须先恢复 pending，不能同时复原退役档");
       }
       const grouped = /* @__PURE__ */ new Map();
@@ -1138,16 +1838,21 @@ ${pendingBlock}`;
       }
       const byFloor = /* @__PURE__ */ new Map();
       for (const [messageId, entries] of grouped) {
-        let text = this.deps.getChatMessages(messageId)[0]?.message ?? "";
+        this.assertCurrentChat(chatEpoch);
+        let text = this.readFloorText(messageId);
         for (const e of entries.sort((a, b) => b.span[0] - a.span[0])) {
           text = replaceSpanExact(text, e.span, e.raw, setGeneration(e.raw, "live"));
         }
         byFloor.set(messageId, text);
       }
       for (const [message_id, message] of byFloor) {
+        this.assertCurrentChat(chatEpoch);
         await this.deps.setChatMessages([{ message_id, message }], { refresh: "none" });
+        this.assertCurrentChat(chatEpoch);
+        this.chatState.markDirty();
       }
-      this.config.lastKnownFloor = this.lastFloor;
+      this.assertCurrentChat(chatEpoch);
+      this.config.lastKnownFloor = this.chatState.syncHead().currentFloor;
       this.persist();
     }
     // ---- 收集（纯逻辑，按 marker 分既存/原始） --------------------------------
@@ -1155,9 +1860,9 @@ ${pendingBlock}`;
     // 带覆盖标记的在场档案 = 既存（取最新一份的末尾可见容器作续写上下文）。
     // 不带的 = 原始（flux 扁平待整理），但**只消化楼层 ≤ 当前层−N 的**——最近 N 层留新鲜（= 触发上界）。
     // 显示/喂给模型前统一滤掉注释。
-    collect(table, selection) {
-      const threshold = this.lastFloor - this.config.n;
-      const live = liveEntries(table);
+    collect(snapshot, selection) {
+      const threshold = snapshot.currentFloor - this.config.n;
+      const live = liveEntries(snapshot.table);
       let sources = live.filter((e) => e.through === null && e.messageId <= threshold);
       if (selection) {
         const endpoint = selection.length > 0 ? Math.max(...selection) : null;
@@ -1182,6 +1887,232 @@ ${pendingBlock}`;
         if (nodes[i].kind === "container") return nodes[i];
       }
       return null;
+    }
+    /**
+     * 事务/来源校验的单层实时读取。只封装重复 I/O 形状，绝不缓存；
+     * 这些 exact read 与 q 快照分属两种安全语义。
+     */
+    readFloorText(messageId) {
+      return this.deps.getChatMessages(messageId)[0]?.message ?? "";
+    }
+    readFloor(messageId) {
+      return this.deps.getChatMessages(messageId).find((message) => message.message_id === messageId) ?? null;
+    }
+    isBlankAssistant(message) {
+      return !!message && message.role === "assistant" && message.message.trim() === "";
+    }
+    clearSummaryPointer() {
+      this.config.summaryPlaceholderFloor = null;
+      this.persist();
+    }
+    /**
+     * 新一轮开始前只处理本插件记住的 y：仍是空白 assistant 才删除；
+     * 缺失或已被正文占用时一律不碰，只忘掉旧指针。随后总是在聊天末尾新建 y。
+     */
+    async cleanRecordedSummaryPlaceholder(chatEpoch) {
+      this.assertCurrentChat(chatEpoch);
+      const y = this.config.summaryPlaceholderFloor;
+      if (y === null) return;
+      const message = this.readFloor(y);
+      if (this.isBlankAssistant(message)) {
+        this.assertCurrentChat(chatEpoch);
+        await this.deps.deleteChatMessages([y], { refresh: "affected" });
+        this.assertCurrentChat(chatEpoch);
+        this.chatState.markDirty();
+      }
+      this.assertCurrentChat(chatEpoch);
+      this.summaryRound = null;
+      this.clearSummaryPointer();
+    }
+    /**
+     * 摘要 → 总结的纯收集：Archive Context 取扫描到的完整 <World_Archive>；
+     * Target Flux 只取最近 Archive 层 x 之后、sourceThrough=q 以内的完整 Flux 标签块。
+     * 两者都只作为冻结读取材料，不改写来源楼层。
+     */
+    collectSummary(read) {
+      const archives = liveEntries(read.table).sort(
+        (a, b) => a.messageId - b.messageId || a.span[0] - b.span[0]
+      );
+      const archiveContext = archives.length ? archives.map((entry) => `【在场档案 · 层 ${entry.messageId}】
+${wrapArchive(stripComments(entry.content), "live")}`).join("\n\n") : "（无既存 World Archive）";
+      const fluxes = collectTargetFlux(
+        read.messages,
+        read.latestLiveArchiveFloor,
+        read.currentFloor
+      ).filter((flux) => flux.inner.trim().length > 0);
+      const targetFlux = fluxes.map((flux) => `【原始摘要 · 层 ${flux.floor}】
+${flux.raw}`).join("\n\n");
+      return {
+        archiveContext,
+        targetFlux,
+        archiveFloors: [...new Set(archives.map((entry) => entry.messageId))],
+        fluxes,
+        latestArchiveFloor: read.latestLiveArchiveFloor,
+        sourceThrough: read.currentFloor,
+        sourceChars: fluxes.reduce((sum, flux) => sum + flux.raw.length, 0)
+      };
+    }
+    ensureSummaryPlaceholder(round) {
+      this.assertCurrentChat(round.chatEpoch);
+      const current = this.readFloor(round.placeholderFloor);
+      if (this.isBlankAssistant(current)) return;
+      if (this.config.summaryPlaceholderFloor === round.placeholderFloor) this.clearSummaryPointer();
+      if (this.summaryRound?.id === round.id) this.summaryRound = null;
+      if (this.phase === "preview") this.phase = "idle";
+      throw new Error(`总结写入位层 ${round.placeholderFloor} 已不是空白 assistant，已停止以免覆盖正文`);
+    }
+    /**
+     * 手动开始永远不受间隔阈值拦截。先清理仍空白的旧 y，再以 fresh q 冻结来源、
+     * 在末尾创建一个新的空白 assistant，最后才发起独立生成。
+     */
+    async generateSummary(guidance = "") {
+      if (this.phase !== "idle") throw new Error("单例锁：已有归档在进行，请先结束或退出");
+      const chatEpoch = this.chatState.currentChatEpoch();
+      await this.cleanRecordedSummaryPlaceholder(chatEpoch);
+      this.assertCurrentChat(chatEpoch);
+      const read = this.chatState.scanFresh();
+      if (read.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+      if (detectInterruptedCommit(read.table).length > 0) {
+        throw new Error("检测到未完成的归档提交；请先继续提交，再生成普通总结");
+      }
+      if (this.integrityCheck(read.table).needed) {
+        throw new Error("检测到档案完整性缺口；请先复原退役档");
+      }
+      const collected = this.collectSummary(read);
+      if (collected.fluxes.length === 0) throw new Error("最近一份 World Archive 之后没有可总结的 Flux");
+      const roundId = `mem-summary-${collected.sourceThrough}-${++this.generationSequence}`;
+      this.assertCurrentChat(chatEpoch);
+      await this.deps.createChatMessages(
+        [{ role: "assistant", message: "" }],
+        { insert_before: "end", refresh: "affected" }
+      );
+      this.assertCurrentChat(chatEpoch);
+      this.chatState.markDirty();
+      const placeholderFloor = this.chatState.syncHead().currentFloor;
+      const placeholder = this.readFloor(placeholderFloor);
+      if (!this.isBlankAssistant(placeholder) || placeholderFloor <= collected.sourceThrough) {
+        throw new Error("末尾空白写入位创建失败，已停止生成");
+      }
+      const round = {
+        id: roundId,
+        chatEpoch,
+        archiveContext: collected.archiveContext,
+        targetFlux: collected.targetFlux,
+        archiveFloors: collected.archiveFloors,
+        fluxFloors: [...new Set(collected.fluxes.map((flux) => flux.floor))],
+        latestArchiveFloor: collected.latestArchiveFloor,
+        sourceThrough: collected.sourceThrough,
+        placeholderFloor,
+        sourceChars: collected.sourceChars,
+        connectionProfileId: this.config.connectionProfileId,
+        orchestration: this.summaryOrchestrationEntries().map((entry) => ({ ...entry }))
+      };
+      this.assertCurrentChat(chatEpoch);
+      this.summaryRound = round;
+      this.config.summaryPlaceholderFloor = placeholderFloor;
+      this.persist();
+      return this.runSummaryGenerate(round, guidance, "idle");
+    }
+    /** 首次失败/取消/超时后，用同一批冻结来源与同一个 y 重试。 */
+    async retrySummary(guidance = "") {
+      if (this.phase !== "idle") throw new Error("只能在空闲状态重试普通总结");
+      const round = this.summaryRound;
+      if (!round) throw new Error("没有可重试的冻结总结来源，请新建一轮");
+      this.ensureSummaryPlaceholder(round);
+      return this.runSummaryGenerate(round, guidance, "idle");
+    }
+    /** 结果页重 roll：来源/y/连接不变，只替换可空 guidance 并重跑整段。 */
+    async regenerateSummary(cand, guidance) {
+      if (this.phase !== "preview") throw new Error("重 roll 需在预览态");
+      const round = this.summaryRound;
+      if (!round || round.id !== cand.round.id) throw new Error("普通总结来源已失效，请新建一轮");
+      this.ensureSummaryPlaceholder(round);
+      return this.runSummaryGenerate(round, guidance, "preview");
+    }
+    async runSummaryGenerate(round, guidance, fallbackPhase) {
+      this.assertCurrentChat(round.chatEpoch);
+      this.ensureSummaryPlaceholder(round);
+      const generationId = `${round.id}-${++this.generationSequence}`;
+      const op = this.beginGeneration(generationId, fallbackPhase);
+      try {
+        const raw = await Promise.race([
+          this.deps.generateRaw({
+            ordered_prompts: assembleSummaryPrompt(round.orchestration, {
+              archiveContext: round.archiveContext,
+              targetFlux: round.targetFlux,
+              guidance
+            }),
+            generation_id: generationId,
+            connection_profile_id: round.connectionProfileId ?? void 0
+          }),
+          op.abortPromise
+        ]);
+        if (this.activeGeneration !== op) throw new GenerationCancelledError();
+        this.assertCurrentChat(round.chatEpoch);
+        const candidate = this.toSummaryCandidate(raw, round, guidance);
+        this.releaseGeneration(op, "preview");
+        return candidate;
+      } catch (error) {
+        this.releaseGeneration(op, fallbackPhase);
+        throw error;
+      }
+    }
+    toSummaryCandidate(raw, round, guidance) {
+      const validation = validateSummaryArchive(raw);
+      return {
+        raw,
+        body: validation.block?.inner ?? "",
+        validation,
+        containers: validation.nodes,
+        sourceThrough: round.sourceThrough,
+        placeholderFloor: round.placeholderFloor,
+        guidance,
+        sourceChars: round.sourceChars,
+        round
+      };
+    }
+    editSummaryCandidate(cand, body) {
+      const wrapped = wrapArchive(body, "live");
+      const oldBlock = cand.validation.block;
+      const raw = oldBlock ? cand.raw.slice(0, oldBlock.span[0]) + wrapped + cand.raw.slice(oldBlock.span[1]) : wrapped;
+      return this.toSummaryCandidate(raw, cand.round, cand.guidance);
+    }
+    /** 只有 y 仍是空白 assistant 才写入；正文变化时宁可失败也绝不覆盖。 */
+    async applySummary(cand) {
+      if (this.phase !== "preview") throw new Error("应用总结需在预览态");
+      if (!cand.validation.ok) throw new Error("硬错未清，拦应用");
+      const round = this.summaryRound;
+      if (!round || round.id !== cand.round.id) throw new Error("普通总结来源已失效，请新建一轮");
+      this.assertCurrentChat(round.chatEpoch);
+      this.ensureSummaryPlaceholder(round);
+      this.phase = "committing";
+      try {
+        this.assertCurrentChat(round.chatEpoch);
+        await this.deps.setChatMessages(
+          [{ message_id: round.placeholderFloor, message: wrapArchive(cand.body, "live") }],
+          { refresh: "affected" }
+        );
+        this.assertCurrentChat(round.chatEpoch);
+        this.chatState.markDirty();
+        this.summaryRound = null;
+        this.config.summaryPlaceholderFloor = null;
+        this.config.summaryLastRemindedFloor = null;
+        this.assertCurrentChat(round.chatEpoch);
+        this.persist();
+        this.phase = "idle";
+        return round.placeholderFloor;
+      } catch (error) {
+        this.phase = "preview";
+        throw error;
+      }
+    }
+    /** 放弃候选不写 y；空白 y 由下次新建总结时安全清理。 */
+    discardSummary() {
+      this.phase = "idle";
+      this.summaryRound = null;
+    }
+    summaryRetryAvailable() {
+      return this.phase === "idle" && this.summaryRound !== null;
     }
     // ---- 生成（单次独立调用，单例锁） ---------------------------------------
     /** 起一次归档生成（要求 idle）。selection 的最大楼层是连续范围端点；省略则走 N 外全部。 */
@@ -1240,16 +2171,17 @@ ${pendingBlock}`;
       this.phase = nextPhase;
     }
     async runGenerate(guidance, selection, fallbackPhase) {
-      const table = this.currentTable();
-      if (detectInterruptedCommit(table).length > 0) {
+      const read = this.chatState.scanFresh();
+      const chatEpoch = read.chatEpoch;
+      if (detectInterruptedCommit(read.table).length > 0) {
         throw new Error("检测到未完成的归档提交；为避免叠加写入，已禁止开始新归档");
       }
-      if (this.integrityCheck(table).needed) {
+      if (this.integrityCheck(read.table).needed) {
         throw new Error("检测到档案完整性缺口；请先复原退役档，再开始新归档");
       }
-      const { historicalContext, sources, continuity } = this.collect(table, selection);
+      const { historicalContext, sources, continuity } = this.collect(read, selection);
       if (sources.length === 0) throw new Error("没有可归档的原始档案");
-      const provenance = this.captureProvenance(sources, continuity);
+      const provenance = this.captureProvenance(sources, continuity, chatEpoch);
       const through = sources.reduce((m, s) => Math.max(m, s.messageId), 0);
       const sourceChars = sources.reduce((s, e) => s + e.content.length, 0);
       const generationId = `mem-${through}-${++this.generationSequence}`;
@@ -1265,6 +2197,7 @@ ${pendingBlock}`;
           op.abortPromise
         ]);
         if (this.activeGeneration !== op) throw new GenerationCancelledError();
+        this.assertCurrentChat(chatEpoch);
         const cand = this.toCandidate(raw, through, guidance, selection, sourceChars, provenance);
         this.releaseGeneration(op, "preview");
         return cand;
@@ -1291,17 +2224,20 @@ ${pendingBlock}`;
     archiveRef(entry) {
       return { messageId: entry.messageId, raw: entry.raw, span: [entry.span[0], entry.span[1]] };
     }
-    captureProvenance(sources, continuity) {
+    captureProvenance(sources, continuity, chatEpoch) {
+      this.assertCurrentChat(chatEpoch);
       const entries = continuity ? [...sources, continuity] : sources;
       const floors = /* @__PURE__ */ new Map();
       for (const entry of entries) {
-        const message = this.deps.getChatMessages(entry.messageId)[0]?.message ?? "";
+        this.assertCurrentChat(chatEpoch);
+        const message = this.readFloorText(entry.messageId);
         if (message.slice(entry.span[0], entry.span[1]) !== entry.raw) {
           throw new Error(`层 ${entry.messageId} 的归档在生成前已变化，请刷新后重试`);
         }
         floors.set(entry.messageId, message);
       }
       return {
+        chatEpoch,
         sources: sources.map((e) => this.archiveRef(e)),
         continuity: continuity ? this.archiveRef(continuity) : null,
         floors: [...floors].map(([messageId, message]) => ({ messageId, message }))
@@ -1314,14 +2250,15 @@ ${pendingBlock}`;
         return entry.messageId === ref.messageId && entry.raw === ref.raw && entry.span[0] === ref.span[0] && entry.span[1] === ref.span[1];
       });
     }
-    assertCandidateProvenance(cand, table) {
+    assertCandidateProvenance(cand, snapshot) {
+      this.assertCurrentChat(cand.provenance.chatEpoch);
       for (const floor of cand.provenance.floors) {
-        const current = this.deps.getChatMessages(floor.messageId)[0]?.message ?? "";
+        const current = this.readFloorText(floor.messageId);
         if (current !== floor.message) {
           throw new Error(`层 ${floor.messageId} 的归档在预览期间发生变化，请重新生成`);
         }
       }
-      const collected = this.collect(table, cand.selection);
+      const collected = this.collect(snapshot, cand.selection);
       if (!this.sameRefs(collected.sources, cand.provenance.sources)) {
         throw new Error("归档来源集合在预览期间发生变化，请重新生成");
       }
@@ -1377,7 +2314,9 @@ ${pendingBlock}`;
      * 楼层里 <World_Archive> 之外的内容（若有）原样保留。
      */
     async editLiveContainer(messageId, expectedRaw, index, newText) {
-      const floorText = this.deps.getChatMessages(messageId)[0]?.message ?? "";
+      const chatEpoch = this.chatState.currentChatEpoch();
+      this.assertCurrentChat(chatEpoch);
+      const floorText = this.readFloorText(messageId);
       const block = buildLocatorTable([{ message_id: messageId, message: floorText }]).find((e) => e.generation === "live");
       if (!block) throw new Error("该楼层没有在场档案");
       if (block.raw !== expectedRaw) throw new Error("档案在编辑期间已变化，请刷新后重试");
@@ -1390,7 +2329,10 @@ ${pendingBlock}`;
       containers[index].container = parsed[0];
       const newInner = serializeArchiveNodes(nodes);
       const rebuilt = replaceSpanExact(floorText, block.span, block.raw, wrapArchive(newInner, "live"));
+      this.assertCurrentChat(chatEpoch);
       await this.deps.setChatMessages([{ message_id: messageId, message: rebuilt }], { refresh: "none" });
+      this.assertCurrentChat(chatEpoch);
+      this.chatState.markDirty();
     }
     // ---- 配置持久化（对话进度写 chat；用户设置另同步 global 种子） --------
     /** 把当前 config 落盘到 chat 作用域。 */
@@ -1410,6 +2352,41 @@ ${pendingBlock}`;
     setN(n) {
       this.config.n = normalizeN(n);
       this.persistUserSetting();
+    }
+    /** 普通总结的提醒间隔；最小 20，只影响提醒。 */
+    setSummaryInterval(value) {
+      this.config.summaryInterval = normalizeSummaryInterval(value);
+      this.persistUserSetting();
+    }
+    /** 启停「摘要 → 大总结」后台功能；关闭不影响手动进入与生成。 */
+    setSummaryEnabled(enabled) {
+      if (this.config.summaryEnabled === enabled) return;
+      this.config.summaryEnabled = enabled;
+      this.persistUserSetting();
+      this.notifyFeatureEnablementChanged();
+    }
+    /** 启停「大总结时间轴化」后台功能；关闭不影响手动进入与生成。 */
+    setTimelineEnabled(enabled) {
+      if (this.config.timelineEnabled === enabled) return;
+      this.config.timelineEnabled = enabled;
+      this.persistUserSetting();
+      this.notifyFeatureEnablementChanged();
+    }
+    /** 订阅两个启用开关的变化；用于运行时即时启停共享监听与动态正则。 */
+    onFeatureEnablementChanged(listener) {
+      this.featureEnablementListeners.add(listener);
+      return () => {
+        this.featureEnablementListeners.delete(listener);
+      };
+    }
+    notifyFeatureEnablementChanged() {
+      for (const listener of this.featureEnablementListeners) {
+        try {
+          listener();
+        } catch (error) {
+          console.warn("[记忆归档] 功能启用状态回调失败：", error);
+        }
+      }
     }
     /** 指派酒馆 Connection Profile（只记 ID，不碰 URL/key）；空 → null（跟随当前连接）。 */
     setConnectionProfile(id) {
@@ -1472,6 +2449,48 @@ ${pendingBlock}`;
     updateOrchestration(id, content) {
       this.setOrchestrationOverride(id, content);
     }
+    /** 普通总结的固定三段式编排，叠加少量 chat override。 */
+    summaryOrchestrationEntries() {
+      return resolveSummaryOrchestration(this.config.summaryOrchestrationOverrides);
+    }
+    summaryOrchestrationState(id) {
+      const override = this.config.summaryOrchestrationOverrides[id];
+      if (!override) return { customized: false, builtinUpdateAvailable: false };
+      const builtin = defaultSummaryOrchestration().find((entry) => entry.id === id);
+      return {
+        customized: true,
+        builtinUpdateAvailable: !!builtin && override.baseHash !== summaryPromptFingerprint(builtin.content)
+      };
+    }
+    summaryPromptOverrideSummary() {
+      const ids = Object.keys(this.config.summaryOrchestrationOverrides);
+      return {
+        customized: ids.length,
+        updates: ids.filter((id) => this.summaryOrchestrationState(id).builtinUpdateAvailable).length
+      };
+    }
+    setSummaryOrchestrationOverride(id, content) {
+      const builtin = defaultSummaryOrchestration().find((entry) => entry.id === id);
+      if (!builtin) return;
+      if (content === builtin.content) {
+        delete this.config.summaryOrchestrationOverrides[id];
+        this.persistUserSetting();
+        return;
+      }
+      const existing = this.config.summaryOrchestrationOverrides[id];
+      this.config.summaryOrchestrationOverrides[id] = existing ? { content, baseHash: existing.baseHash } : makeSummaryOrchestrationOverride(content, builtin.content);
+      this.persistUserSetting();
+    }
+    resetSummaryOrchestrationOverride(id) {
+      if (!(id in this.config.summaryOrchestrationOverrides)) return;
+      delete this.config.summaryOrchestrationOverrides[id];
+      this.persistUserSetting();
+    }
+    resetAllSummaryOrchestrationOverrides() {
+      if (Object.keys(this.config.summaryOrchestrationOverrides).length === 0) return;
+      this.config.summaryOrchestrationOverrides = {};
+      this.persistUserSetting();
+    }
     // ---- 提交决策 + 两段提交 -------------------------------------------------
     /**
      * 由候选 + 定位表构建提交决策（按 marker 分既存/原始）：
@@ -1480,20 +2499,20 @@ ${pendingBlock}`;
      *   - 覆盖标记端点 = 该层（总结到这层），打在新档内部；
      *   - 仅当候选首容器与既存末尾容器标题完全一致时，增量覆写该末尾容器。
      */
-    buildCommitDecision(cand, table) {
-      if (detectInterruptedCommit(table).length > 0) {
+    buildCommitDecision(cand, snapshot) {
+      if (detectInterruptedCommit(snapshot.table).length > 0) {
         throw new Error("检测到未完成的归档提交；请先恢复现场，不能继续保存");
       }
-      if (this.integrityCheck(table).needed) {
+      if (this.integrityCheck(snapshot.table).needed) {
         throw new Error("检测到档案完整性缺口；请先复原退役档，不能继续保存");
       }
-      const { sources, continuity } = this.assertCandidateProvenance(cand, table);
+      const { sources, continuity } = this.assertCandidateProvenance(cand, snapshot);
       if (sources.length === 0) throw new Error("提交失败：归档来源为空");
       const target = sources.reduce((m, s) => Math.max(m, s.messageId), 0);
       if (target !== cand.through) throw new Error("提交边界与生成时来源不一致，请重新生成");
       const retire = sources.map((s) => ({
         message_id: s.messageId,
-        message: this.deps.getChatMessages(s.messageId)[0]?.message ?? "",
+        message: this.readFloorText(s.messageId),
         blockRaw: s.raw,
         blockSpan: s.span
       }));
@@ -1502,13 +2521,13 @@ ${pendingBlock}`;
       const continuesLastContainer = candidateFirst?.kind === "container" && continuityLast?.kind === "container" && candidateFirst.title.length > 0 && continuityLast.title.length > 0 && candidateFirst.title === continuityLast.title;
       const supersede = continuity && continuesLastContainer ? {
         message_id: continuity.messageId,
-        message: this.deps.getChatMessages(continuity.messageId)[0]?.message ?? "",
+        message: this.readFloorText(continuity.messageId),
         blockRaw: continuity.raw,
         blockSpan: continuity.span
       } : void 0;
       return {
         targetMessageId: target,
-        targetMessageText: this.deps.getChatMessages(target)[0]?.message ?? "",
+        targetMessageText: this.readFloorText(target),
         pendingBody: cand.body,
         through: cand.through,
         retire,
@@ -1520,8 +2539,11 @@ ${pendingBlock}`;
       if (this.phase !== "preview") throw new Error("提交需在预览态");
       if (!cand.validation.ok) throw new Error("硬错未清，拦保存");
       void table;
-      const freshTable = this.currentTable();
-      const decision = this.buildCommitDecision(cand, freshTable);
+      const chatEpoch = cand.provenance.chatEpoch;
+      this.assertCurrentChat(chatEpoch);
+      const fresh = this.chatState.scanFresh();
+      if (fresh.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+      const decision = this.buildCommitDecision(cand, fresh);
       const plan = planCommit(decision);
       let commitLog = createCommitLog({
         targetFloor: decision.targetMessageId,
@@ -1529,34 +2551,43 @@ ${pendingBlock}`;
         plannedOldFloors: decision.retire.map((item) => item.message_id),
         supersedeFloor: decision.supersede?.message_id
       });
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, commitLog);
       this.phase = "committing";
       try {
-        await executeCommit(plan, this.deps, {
+        await executeCommit(plan, this.guardedCommitDeps(chatEpoch), {
           afterStepVerified: (step) => {
+            this.assertCurrentChat(chatEpoch);
+            this.chatState.markDirty();
             commitLog = markCommitStepSucceeded(commitLog, step);
             saveCommitLog(this.deps, commitLog);
           }
         });
-        this.finalizeAfterCommit(decision.through);
+        this.finalizeAfterCommit(decision.through, chatEpoch);
         commitLog = completeCommitLog(commitLog);
+        this.assertCurrentChat(chatEpoch);
         saveCommitLog(this.deps, commitLog);
         this.phase = "idle";
       } catch (err) {
-        try {
-          commitLog = markCommitLogFailed(commitLog, err);
-          saveCommitLog(this.deps, commitLog);
-        } catch {
+        if (this.chatState.isCurrentChatEpoch(chatEpoch)) {
+          this.chatState.markDirty();
+          try {
+            commitLog = markCommitLogFailed(commitLog, err);
+            saveCommitLog(this.deps, commitLog);
+          } catch {
+          }
         }
         this.phase = "idle";
         throw err;
       }
     }
     /** 提交成功收尾：推进 boundary、重置基线与提醒。commit 与 resumeCommit 共用。 */
-    finalizeAfterCommit(through) {
+    finalizeAfterCommit(through, chatEpoch) {
+      this.assertCurrentChat(chatEpoch);
       this.config.boundary = through;
-      this.config.lastKnownFloor = this.lastFloor;
+      this.config.lastKnownFloor = this.chatState.syncHead().currentFloor;
       this.config.lastDismissedFloor = null;
+      this.assertCurrentChat(chatEpoch);
       this.persist();
     }
     // ---- 崩溃恢复 -------------------------------------------------------------
@@ -1572,15 +2603,20 @@ ${pendingBlock}`;
      */
     async resumeCommit() {
       if (this.phase !== "idle") throw new Error("单例锁：请先结束当前归档，再继续未完成的提交");
+      const chatEpoch = this.chatState.currentChatEpoch();
+      this.assertCurrentChat(chatEpoch);
       const loaded = loadCommitLog(this.deps);
       if (!loaded) throw new Error("没有找到未完成的提交记录");
       if (loaded.status === "completed") throw new Error("该提交已完成，无需继续");
       let log = loaded;
       const target = log.targetFloor;
-      const table = this.currentTable();
+      const read = this.chatState.scanFresh();
+      if (read.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+      const table = read.table;
       const pending = table.find((e) => e.messageId === target && e.generation === "pending") ?? null;
       if (!pending) {
         if (!log.pendingWritten) {
+          this.assertCurrentChat(chatEpoch);
           clearCommitLog(this.deps);
           return { resumed: false, steps: 0 };
         }
@@ -1590,38 +2626,47 @@ ${pendingBlock}`;
         if (!promoted) {
           throw new Error("现场既无 pending 也无对应在场新档，无法自动继续，请人工核对档案");
         }
-        log = this.reconcileCompleted(log, table, null);
-        this.finalizeAfterCommit(log.through);
+        log = this.reconcileCompleted(log, table, null, chatEpoch);
+        this.finalizeAfterCommit(log.through, chatEpoch);
         log = completeCommitLog(log);
+        this.assertCurrentChat(chatEpoch);
         saveCommitLog(this.deps, log);
         return { resumed: true, steps: 0 };
       }
       if (!log.pendingWritten) {
         log = this.markStep(log, "write-pending", target);
+        this.assertCurrentChat(chatEpoch);
         saveCommitLog(this.deps, log);
       }
       const pendingFirst = parseArchiveBody(pending.content).find((c) => c.kind === "container") ?? null;
       const plan = this.planResumeSteps(log, table, pending);
       this.phase = "committing";
       try {
-        await executeCommit(plan, this.deps, {
+        await executeCommit(plan, this.guardedCommitDeps(chatEpoch), {
           afterStepVerified: (step) => {
+            this.assertCurrentChat(chatEpoch);
+            this.chatState.markDirty();
             log = markCommitStepSucceeded(log, step);
             saveCommitLog(this.deps, log);
           }
         });
-        const done = this.currentTable();
-        log = this.reconcileCompleted(log, done, pendingFirst);
-        this.finalizeAfterCommit(log.through);
+        const doneRead = this.chatState.scanFresh();
+        if (doneRead.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+        log = this.reconcileCompleted(log, doneRead.table, pendingFirst, chatEpoch);
+        this.finalizeAfterCommit(log.through, chatEpoch);
         log = completeCommitLog(log);
+        this.assertCurrentChat(chatEpoch);
         saveCommitLog(this.deps, log);
         this.phase = "idle";
         return { resumed: true, steps: plan.length };
       } catch (err) {
-        try {
-          log = markCommitLogFailed(log, err);
-          saveCommitLog(this.deps, log);
-        } catch {
+        if (this.chatState.isCurrentChatEpoch(chatEpoch)) {
+          this.chatState.markDirty();
+          try {
+            log = markCommitLogFailed(log, err);
+            saveCommitLog(this.deps, log);
+          } catch {
+          }
         }
         this.phase = "idle";
         throw err;
@@ -1633,7 +2678,7 @@ ${pendingBlock}`;
       const steps = [];
       const work = /* @__PURE__ */ new Map();
       const floorText = (id) => {
-        if (!work.has(id)) work.set(id, this.deps.getChatMessages(id)[0]?.message ?? "");
+        if (!work.has(id)) work.set(id, this.readFloorText(id));
         return work.get(id);
       };
       const remaining = log.plannedOldFloors.filter((f) => !log.oldSucceededFloors.includes(f));
@@ -1695,7 +2740,8 @@ ${pendingBlock}`;
      * 续跑后据现场把「因幂等而跳过的步骤」补记进日志，并校验整笔确实完成。
      * 任一计划变更在现场仍未落地即抛错——绝不把半截态记成 completed。
      */
-    reconcileCompleted(log, table, pendingFirst) {
+    reconcileCompleted(log, table, pendingFirst, chatEpoch) {
+      this.assertCurrentChat(chatEpoch);
       let next = log;
       if (!next.pendingWritten) next = this.markStep(next, "write-pending", next.targetFloor);
       for (const floor of next.plannedOldFloors) {
@@ -1717,6 +2763,7 @@ ${pendingBlock}`;
         if (hasPending) throw new Error("pending 仍未转正，继续提交未完成");
         next = this.markStep(next, "promote-live", next.targetFloor);
       }
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, next);
       return next;
     }
@@ -1733,9 +2780,14 @@ ${pendingBlock}`;
     }
     /** 仅移除 pending；只有确认事务尚未退役/覆写任何旧档时才可把它当完整回滚。 */
     async rollbackPending(entry) {
-      const text = this.deps.getChatMessages(entry.messageId)[0]?.message ?? "";
+      const chatEpoch = this.chatState.currentChatEpoch();
+      this.assertCurrentChat(chatEpoch);
+      const text = this.readFloorText(entry.messageId);
       const restored = planRollbackPending(text, entry.raw, entry.span);
+      this.assertCurrentChat(chatEpoch);
       await this.deps.setChatMessages([{ message_id: entry.messageId, message: restored }], { refresh: "none" });
+      this.assertCurrentChat(chatEpoch);
+      this.chatState.markDirty();
     }
   };
 
@@ -1777,6 +2829,21 @@ ${pendingBlock}`;
     }
     return 8192;
   }
+  function mapChatMessage(message) {
+    return {
+      message_id: message.message_id,
+      message: message.message,
+      name: message.name,
+      role: message.role,
+      is_hidden: message.is_hidden,
+      data: message.data,
+      extra: message.extra,
+      swipe_id: message.swipe_id,
+      swipes: message.swipes,
+      swipes_data: message.swipes_data,
+      swipes_info: message.swipes_info
+    };
+  }
   function createTavernDeps() {
     const profileControllers = /* @__PURE__ */ new Map();
     async function generateWithConnectionProfile(config, profileId) {
@@ -1811,8 +2878,10 @@ ${pendingBlock}`;
       }
     }
     return {
-      getChatMessages: (range) => getChatMessages(range).map((m) => ({ message_id: m.message_id, message: m.message })),
+      getChatMessages: (range) => getChatMessages(range).map(mapChatMessage),
       setChatMessages: (messages, option) => setChatMessages(messages, option),
+      createChatMessages: (messages, option) => createChatMessages(messages, option),
+      deleteChatMessages: (messageIds, option) => deleteChatMessages(messageIds, option),
       getLastMessageId: () => getLastMessageId(),
       generateRaw: async (config) => {
         if (config.connection_profile_id) {
@@ -1898,13 +2967,23 @@ ${pendingBlock}`;
 .wrap .squares{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .wrap .sq{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 15px 15px;min-height:120px;display:flex;flex-direction:column;cursor:pointer;transition:.16s;}
 .wrap .sq:hover{border-color:var(--acc);transform:translateY(-1px);box-shadow:0 8px 22px -14px rgba(120,92,60,.5);}
+.wrap .sqtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;min-height:18px;}
 .wrap .sq .dot{width:8px;height:8px;border-radius:50%;background:var(--acc);margin-bottom:11px;}
+.wrap .sqtop .dot{margin-bottom:0;}
+.wrap .feature-switch{appearance:none;-webkit-appearance:none;position:relative;width:31px;height:18px;flex:0 0 auto;border:1px solid var(--line);border-radius:999px;background:var(--field);cursor:pointer;transition:background .16s,border-color .16s,box-shadow .16s;padding:0;}
+.wrap .feature-switch::after{content:"";position:absolute;width:12px;height:12px;left:2px;top:2px;border-radius:50%;background:var(--mut);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:transform .16s,background .16s;}
+.wrap .feature-switch[aria-checked="true"]{background:var(--acc);border-color:var(--acc);}
+.wrap .feature-switch[aria-checked="true"]::after{background:#fff;transform:translateX(13px);}
+.wrap.night .feature-switch[aria-checked="true"]::after{background:#26221e;}
+.wrap .feature-switch:hover{box-shadow:0 0 0 3px var(--acc-soft);}
+.wrap .feature-switch:focus-visible{outline:2px solid var(--acc);outline-offset:2px;}
 .wrap .sq .t{font-size:14px;font-weight:600;letter-spacing:.3px;}
 .wrap .updot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft);margin-left:7px;vertical-align:1px;}
 .wrap .sq .d{font-size:11px;color:var(--mut);margin-top:5px;line-height:1.6;}
 .wrap .sq .sp{flex:1;}
 .wrap .sq .stat{font-size:11px;color:var(--ink2);}
 .wrap .sq .stat b{color:var(--acc);font-weight:600;}
+.wrap .sq .stat.disabled{color:var(--mut);}
 .wrap .sq .stat.due{display:flex;align-items:center;gap:6px;color:var(--acc);font-weight:500;}
 .wrap .sq .stat.due .pin{width:6px;height:6px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 3px var(--acc-soft);flex:0 0 auto;}
 .wrap .sq.tbd{background:transparent;border-style:dashed;cursor:default;}
@@ -2156,6 +3235,11 @@ ${pendingBlock}`;
 .wrap .genfail .gtxt{min-width:0;line-height:1.55;}
 .wrap .retrybtn{flex:0 0 auto;border:1px solid var(--warn);background:transparent;color:var(--warn);font:inherit;font-size:10.5px;padding:5px 9px;border-radius:7px;cursor:pointer;}
 .wrap .retrybtn:hover{background:var(--warn-soft);}
+.wrap .summary-fail{display:block;cursor:default;}
+.wrap .summary-fail .guide{margin:10px 0 0;}
+.wrap .summary-fail .retryrow{display:flex;align-items:center;gap:10px;margin-top:9px;}
+.wrap .summary-fail .retryrow .subhint{margin:0;flex:1;}
+.wrap .summary-fail .retrybtn[disabled]{opacity:.45;cursor:not-allowed;}
 
 /* mobile fallback：脚本会再按 visualViewport 精确定位；这里保证脚本尚未运行时也不重排内部 UI。 */
 @media (max-width:640px), (pointer:coarse) and (max-height:600px){
@@ -2177,7 +3261,8 @@ ${pendingBlock}`;
     const p = ['<div class="shell">&lt;World_Archive&gt;</div>'];
     for (const c of containers) {
       const [o, cl] = c.kind === "segment" ? ["[", "]"] : ["《", "》"];
-      p.push(`<div class="ctitle">${o}${label(c.title, c.time)}${cl}</div>`);
+      const head = c.kind === "segment" ? [c.title, c.keywords, c.time].filter(Boolean).map((x) => esc(x)).join(" | ") : label(c.title, c.time);
+      p.push(`<div class="ctitle">${o}${head}${cl}</div>`);
       if (c.summary) p.push(`<div class="big">${esc(c.summary)}</div>`);
       for (const ex of c.looseExcerpts ?? []) p.push(`<div class="exc"><span class="d">·</span> ${esc(ex.text)}</div>`);
       for (const f of c.fragments) {
@@ -2201,7 +3286,15 @@ ${pendingBlock}`;
       CONTAINER_NO_FRAGMENT: "容器只有大总结",
       FRAGMENT_TIME_MISSING: "片段缺时间字段",
       FRAGMENT_NO_EXCERPT: "片段有小总结无摘录",
-      BRACKET_UNBALANCED: "摘录引号疑似不闭合"
+      BRACKET_UNBALANCED: "摘录引号疑似不闭合",
+      ARCHIVED_MARKER_FORBIDDEN: "普通档含覆盖标记",
+      SEGMENT_TOKEN_BROKEN: "事件段标题符号不完整",
+      NO_SEGMENT: "无普通事件段",
+      CONTAINER_UNEXPECTED: "出现时间轴容器",
+      SEGMENT_SUMMARY_EMPTY: "事件段总结为空",
+      SEGMENT_TITLE_MISSING: "事件段缺标题",
+      SEGMENT_KEYWORDS_MISSING: "事件段缺关键词",
+      SEGMENT_TIME_MISSING: "事件段缺时间"
     };
     return m[i.code] ?? i.code;
   }
@@ -2217,7 +3310,15 @@ ${pendingBlock}`;
       CONTAINER_NO_FRAGMENT: "翻一眼原文，确认要不要补一两条摘录。",
       FRAGMENT_TIME_MISSING: "补上时间范围便于定位；也可留着。",
       FRAGMENT_NO_EXCERPT: "看要不要补一两条摘录；也可留着。",
-      BRACKET_UNBALANCED: "检查「」是否配对。"
+      BRACKET_UNBALANCED: "检查「」是否配对。",
+      ARCHIVED_MARKER_FORBIDDEN: "删除 archived 覆盖标记；摘要 → 大总结不能接管时间轴覆盖链。",
+      SEGMENT_TOKEN_BROKEN: "检查事件段的 [] 与竖线字段是否完整。",
+      NO_SEGMENT: "改为一个或多个普通扁平 [] 事件段，或重新生成。",
+      CONTAINER_UNEXPECTED: "摘要 → 大总结应使用 [] 事件段；可手改或保留后应用。",
+      SEGMENT_SUMMARY_EMPTY: "为该事件段补上客观总结，或重新生成。",
+      SEGMENT_TITLE_MISSING: "补一个简短事件标题；也可保留。",
+      SEGMENT_KEYWORDS_MISSING: "补上情绪／感知关键词字段；也可保留。",
+      SEGMENT_TIME_MISSING: "补上起止时间字段；也可保留。"
     };
     return m[i.code] ?? (i.severity === "hard" ? "点档案任意处改，或重新生成。" : "可斟酌，仍可保存。");
   }
@@ -2246,7 +3347,9 @@ ${pendingBlock}`;
     let view = "hub";
     let snap = null;
     let cand = null;
+    let summaryCand = null;
     let mode = "archive";
+    let summaryMode = "archive";
     let night = true;
     let flash = "";
     let nodes = [];
@@ -2254,12 +3357,17 @@ ${pendingBlock}`;
     let detailCurIdx = null;
     let editingIdx = null;
     let expandMod = null;
+    let summaryExpandMod = null;
     let fullEdit = null;
     let showRetired = false;
     let candEditing = false;
+    let summaryCandEditing = false;
     let reopenEditor = false;
+    let summaryReopenEditor = false;
     let activeGenerationAttempt = null;
     let failedGeneration = null;
+    let activeSummaryGenerationAttempt = null;
+    let failedSummaryGeneration = null;
     let generationUiEpoch = 0;
     let renderedSurface = null;
     let rangeThrough = null;
@@ -2347,7 +3455,7 @@ ${pendingBlock}`;
     function rangeSources() {
       if (!snap) return [];
       const byFloor = /* @__PURE__ */ new Map();
-      for (const e of session.collect(snap.table).sources) {
+      for (const e of session.collect(snap).sources) {
         if (byFloor.has(e.messageId)) continue;
         const title = parseArchiveBody(e.content).map((c) => c.title).find(Boolean) || "（无题）";
         byFloor.set(e.messageId, title);
@@ -2366,6 +3474,23 @@ ${pendingBlock}`;
       if (!failedGeneration || failedGeneration.attempt.kind !== kind) return "";
       return `<div class="warnbar genfail"><span class="gtxt">${esc(failedGeneration.message)}</span><button type="button" class="retrybtn" data-act="retry-generation">按相同参数重试</button></div>`;
     }
+    function summaryInitialFailureHtml() {
+      const failed = failedSummaryGeneration;
+      if (!failed || failed.attempt.kind === "reroll") return "";
+      const retryable = session.summaryRetryAvailable();
+      return `<div class="warnbar summary-fail">
+      <div class="gtxt">${esc(failed.message)}</div>
+      <div class="guide"><div class="glab">同一批来源重试的补充引导 · 可留空</div>
+        <input data-el="summary-retry-guide" placeholder="例如：优先保留某段因果、动作或对白" value="${esc(failed.attempt.guidance)}"></div>
+      <div class="retryrow"><button type="button" class="ghost" data-act="summary-failed-discard">放弃本轮</button><span class="subhint">${retryable ? "只重跑生成；来源批次保持不变" : "这次尚未冻结出可重试的来源批次，请重新开始"}</span>
+        <button type="button" class="retrybtn" data-act="summary-retry"${retryable ? "" : " disabled"}>同一批来源重试</button></div>
+    </div>`;
+    }
+    function summaryRerollFailureHtml() {
+      const failed = failedSummaryGeneration;
+      if (!failed || failed.attempt.kind !== "reroll") return "";
+      return `<div class="warnbar genfail"><span class="gtxt">${esc(failed.message)} · 原候选仍保留</span></div>`;
+    }
     function interruptedProgressText() {
       const log = snap?.commitLog;
       if (!log || log.status === "completed") return "无薄日志（旧版中断），无法安全推断已进行到哪一步";
@@ -2378,7 +3503,14 @@ ${pendingBlock}`;
       const s = snap;
       const liveN = s ? s.table.filter((e) => e.generation === "live").length : 0;
       const trig = s?.trigger;
+      const timelineEnabled = session.config.timelineEnabled !== false;
+      const summaryEnabled = session.config.summaryEnabled !== false;
       const due = trig?.eligible ? `<div class="stat due"><span class="pin"></span>该总结了 · 可总结 ${trig.range?.from}–${trig.range?.to}</div>` : `<div class="stat">上次总结至 <b>层 ${s?.boundary ?? 0}</b></div>`;
+      const disabledStatus = '<div class="stat disabled">未启用 · 仍可手动开始</div>';
+      const featureSwitch = (feature, enabled, label2) => `
+      <button type="button" class="feature-switch" data-act="toggle-${feature}" role="switch"
+        aria-checked="${enabled}" aria-label="${enabled ? "关闭" : "启用"}${label2}"
+        title="${enabled ? "关闭" : "启用"}${label2}"></button>`;
       const integrityBar = s?.integrity.needed && !s.interrupted.length ? `<div class="warnbar" data-act="integrity-open">⚠ 检测到 ${s.integrity.toRestore.length} 份需复原的退役档 · 点此处理</div>` : "";
       const interruptedBar = s?.interrupted.length ? `<div class="warnbar" data-act="commitlog-open">⚠ 检测到 ${s.interrupted.length} 份未完成 pending · ${esc(interruptedProgressText())} · 点此查看／继续</div>` : "";
       const commitLogLink = s?.commitLog && !s.interrupted.length ? `<div class="txlink" data-act="commitlog-open">提交事务日志 · 最近一笔${esc(COMMIT_STATUS_LABEL[s.commitLog.status] ?? s.commitLog.status)} ›</div>` : "";
@@ -2386,6 +3518,11 @@ ${pendingBlock}`;
       const connectionStatus = selectedProfile ? `${esc(selectedProfile.name)}${selectedProfile.model ? ` · ${esc(selectedProfile.model)}` : ""} · <b>已选</b>` : session.config.connectionProfileId ? "原连接配置已不存在 · 请重新选择" : "跟随当前酒馆连接";
       const promptUpdates = session.promptOverrideSummary().updates;
       const promptUpdateDot = promptUpdates ? `<span class="updot" title="${promptUpdates} 处自定义提示词有内置新版"></span>` : "";
+      const summaryPromptUpdates = session.summaryPromptOverrideSummary().updates;
+      const summaryPromptUpdateDot = summaryPromptUpdates ? `<span class="updot" title="${summaryPromptUpdates} 处摘要 → 大总结提示词有内置新版"></span>` : "";
+      const summaryTrig = s?.summaryTrigger;
+      const latestArchive = s?.latestLiveArchiveFloor ?? null;
+      const summaryStatus = latestArchive === null ? `<div class="stat${summaryTrig?.eligible ? " due" : ""}">${summaryTrig?.eligible ? '<span class="pin"></span>' : ""}尚无 Archive · 已累计 <b>${summaryTrig?.distance ?? 0} 层</b></div>` : `<div class="stat${summaryTrig?.eligible ? " due" : ""}">${summaryTrig?.eligible ? '<span class="pin"></span>' : ""}最近 Archive 层 <b>${latestArchive}</b> · 距今 ${summaryTrig?.distance ?? 0} 层</div>`;
       return `
       <div class="head"><div class="title">记忆档案</div><span class="grow"></span>${dnToggle()}</div>
       <div class="body">
@@ -2408,13 +3545,15 @@ ${pendingBlock}`;
         </div>
         <div class="grouplab">总结设置 · 单次设好基本不动</div>
         <div class="squares">
-          <div class="sq" data-act="setup">
-            <span class="dot"></span><div class="t">大总结时间轴化${promptUpdateDot}</div>
-            <div class="d">预设提示词 ＋ 架构</div><div class="sp"></div>${due}
+          <div class="sq" data-act="summary-setup">
+            <div class="sqtop"><span class="dot"></span>${featureSwitch("summary", summaryEnabled, "摘要 → 大总结")}</div>
+            <div class="t">摘要 → 大总结${summaryPromptUpdateDot}</div>
+            <div class="sp"></div>${summaryEnabled ? summaryStatus : disabledStatus}
           </div>
-          <div class="sq tbd">
-            <span class="dot"></span><div class="t">正文 → 摘要</div>
-            <div class="d">与现架构未贴合</div><div class="sp"></div><div class="foot">预留 · 待定</div>
+          <div class="sq" data-act="setup">
+            <div class="sqtop"><span class="dot"></span>${featureSwitch("timeline", timelineEnabled, "大总结时间轴化")}</div>
+            <div class="t">大总结时间轴化${promptUpdateDot}</div>
+            <div class="d">进一步压缩大总结的内容</div><div class="sp"></div>${timelineEnabled ? due : disabledStatus}
           </div>
         </div>
         ${commitLogLink}
@@ -2435,7 +3574,7 @@ ${pendingBlock}`;
       const integrityBlocked = !!s?.integrity.needed;
       const canRun = selected.length > 0 && !interrupted && !integrityBlocked;
       const { pre, post } = orchParts();
-      const collected = snap ? session.collect(snap.table) : null;
+      const collected = snap ? session.collect(snap) : null;
       const promptSummary = session.promptOverrideSummary();
       const moduleEdit = (entries) => {
         return `<div class="modedit">${entries.map((e) => `<textarea data-oid="${esc(e.id)}">${esc(e.content)}</textarea>`).join("")}</div>`;
@@ -2504,6 +3643,74 @@ ${pendingBlock}`;
           <div class="mod" data-mod="post">
             <div class="modhead" data-act="mod-toggle" data-mod="post"><span class="mt">后置提示词</span>${moduleTags(post)}<span class="grow"></span>${moduleActions(post, "post")}</div>
             ${postEdit}
+          </div>
+        </div>
+      </div>`;
+    }
+    function renderSummarySetup() {
+      const s = snap;
+      const trigger = s?.summaryTrigger;
+      const x = s?.latestLiveArchiveFloor ?? null;
+      const q = s?.currentFloor ?? 0;
+      const interrupted = (s?.interrupted.length ?? 0) > 0;
+      const integrityBlocked = !!s?.integrity.needed;
+      const canRun = session.phase === "idle" && !interrupted && !integrityBlocked;
+      const entries = session.summaryOrchestrationEntries();
+      const pre = entries.find((entry) => entry.id === "pre");
+      const runtime = entries.find((entry) => entry.id === "runtime");
+      const post = entries.find((entry) => entry.id === "post");
+      const promptSummary = session.summaryPromptOverrideSummary();
+      const archiveFloors = [...new Set((s?.table ?? []).filter((entry) => entry.generation === "live").map((entry) => entry.messageId))].sort((a, b) => a - b);
+      const moduleTags = (id) => {
+        const state = session.summaryOrchestrationState(id);
+        if (!state.customized) return '<span class="prompttag">跟随内置</span>';
+        return `<span class="prompttag custom">自定义</span>${state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ""}`;
+      };
+      const moduleActions = (entry, modKey) => {
+        if (summaryExpandMod !== modKey) return '<span class="pen">✎</span>';
+        const state = session.summaryOrchestrationState(entry.id);
+        return `<span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
+        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">恢复内置最新版</span>` : ""}
+        <span class="headact" data-act="summary-mod-cancel">取消</span>
+        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span>`;
+      };
+      const moduleEdit = (entry) => summaryExpandMod === entry.id ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(entry.content)}</textarea></div>` : "";
+      const runtimeEdit = summaryExpandMod === "runtime" ? `<div class="modedit"><div class="runtime-summary">
+          <div><b>Archive Context</b> 全部完整 &lt;World_Archive&gt;${archiveFloors.length ? ` · 层 ${archiveFloors.join("、")}` : " · 无"}</div>
+          <div><b>Target Flux</b> ${x === null ? `最早楼层至当前层 ${q}` : `层 ${x} 之后至当前层 ${q}`}的完整 Flux / Causal_Flux</div>
+          <div><b>补充引导</b> 首次可空；失败重试与结果重跑均可手动填写</div>
+        </div></div>` : "";
+      const reminderText = trigger?.eligible ? `已达到 ${trigger.interval} 层提醒间隔；这只是提醒，仍可随时手动开始` : `距最近 Archive ${trigger?.distance ?? 0} 层 · 到层 ${trigger?.nextFloor ?? q} 时提醒；仍可现在手动开始`;
+      return `
+      <div class="top"><span class="back" data-act="home">‹</span><span class="htitle">摘要 → 大总结</span><span class="grow"></span>${dnToggle()}</div>
+      <div class="body">
+        ${flash ? `<div class="warnbar${flash.includes("✓") ? " okbar" : ""}">${esc(flash)}</div>` : ""}
+        ${summaryInitialFailureHtml()}
+        ${interrupted ? `<div class="warnbar">⚠ 有未完成 pending；${esc(interruptedProgressText())}；当前禁止开始摘要 → 大总结</div>` : ""}
+        ${integrityBlocked && !interrupted ? '<div class="warnbar">⚠ 档案完整性缺口尚未复原；当前禁止开始摘要 → 大总结</div>' : ""}
+        <button class="runbtn${canRun ? "" : " off"}" data-act="summary-run"${canRun ? "" : " disabled"}>开始生成大总结</button>
+        <div class="setwrap">
+          <div class="setrow"><span>每隔</span>
+            <span class="num"><button data-act="summary-interval-dec"${(trigger?.interval ?? session.config.summaryInterval) <= MIN_SUMMARY_INTERVAL ? " disabled" : ""}>−</button><input data-el="summary-interval" type="number" min="${MIN_SUMMARY_INTERVAL}" step="10" value="${trigger?.interval ?? session.config.summaryInterval}" inputmode="numeric"><button data-act="summary-interval-inc">＋</button></span>
+            <span>层提醒一次</span></div>
+          <div class="subhint">${reminderText}</div>
+          <div class="subhint">最近 Archive：${x === null ? "无（x = null）" : `层 ${x}（x = ${x}）`} · 当前聊天末层 ${q}</div>
+        </div>
+        <div class="promptsec"><div class="seclab">固定三段式提示词 · 铅笔编辑</div><span class="grow"></span>
+          ${promptSummary.customized ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ""}<span class="promptreset" data-act="summary-prompt-reset-all">全部使用内置最新版</span></span>` : '<span class="promptfollow">自动跟随内置最新版</span>'}
+        </div>
+        <div class="mods">
+          <div class="mod" data-summary-mod="pre">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="pre"><span class="mt">${esc(pre.label)}</span>${moduleTags("pre")}<span class="grow"></span>${moduleActions(pre, "pre")}</div>
+            ${moduleEdit(pre)}
+          </div>
+          <div class="mod ro">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="runtime"><span class="mt">${esc(runtime.label)}</span><span class="rotag">只读</span><span class="grow"></span><span class="pen">${summaryExpandMod === "runtime" ? "▴" : "▾"}</span></div>
+            ${runtimeEdit}
+          </div>
+          <div class="mod" data-summary-mod="post">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="post"><span class="mt">${esc(post.label)}</span>${moduleTags("post")}<span class="grow"></span>${moduleActions(post, "post")}</div>
+            ${moduleEdit(post)}
           </div>
         </div>
       </div>`;
@@ -2611,14 +3818,14 @@ ${pendingBlock}`;
     function renderResult() {
       const c = cand;
       const v = c.validation;
-      const hard2 = v.issues.filter((i) => i.severity === "hard");
-      const soft2 = v.issues.filter((i) => i.severity === "soft");
-      const state = !v.ok ? "hard" : soft2.length ? "soft" : "ok";
+      const hard3 = v.issues.filter((i) => i.severity === "hard");
+      const soft3 = v.issues.filter((i) => i.severity === "soft");
+      const state = !v.ok ? "hard" : soft3.length ? "soft" : "ok";
       const repairPreview = !candEditing ? session.repairCandidate(c) : { candidate: c, fixes: [] };
       const repairable = repairPreview.fixes.length > 0;
       const ratio = c.sourceChars > 0 ? (c.sourceChars / Math.max(1, c.body.length)).toFixed(1) : "—";
-      const verify = state === "ok" ? `<div class="verify ok"><span class="mk">✓</span><span class="vt">结构通过 · 容器与片段闭合完整</span><span class="vs">${c.containers.length} 容器</span></div>` : state === "soft" ? `<div class="verify soft"><span class="mk">!</span><span class="vt">结构无硬错 · 有 ${soft2.length} 处可斟酌</span><span class="vs">软疑不拦 · 可直接保存</span></div>` : `<div class="verify hard"><span class="mk">✕</span><span class="vt">结构有硬错 · 无法保存</span><span class="vs">${hard2.length} 处 · 须改或重生成</span></div>`;
-      const issueList = state === "ok" ? "" : `<div class="issues">${(state === "hard" ? hard2 : soft2).map(
+      const verify = state === "ok" ? `<div class="verify ok"><span class="mk">✓</span><span class="vt">结构通过 · 容器与片段闭合完整</span><span class="vs">${c.containers.length} 容器</span></div>` : state === "soft" ? `<div class="verify soft"><span class="mk">!</span><span class="vt">结构无硬错 · 有 ${soft3.length} 处可斟酌</span><span class="vs">软疑不拦 · 可直接保存</span></div>` : `<div class="verify hard"><span class="mk">✕</span><span class="vt">结构有硬错 · 无法保存</span><span class="vs">${hard3.length} 处 · 须改或重生成</span></div>`;
+      const issueList = state === "ok" ? "" : `<div class="issues">${(state === "hard" ? hard3 : soft3).map(
         (i) => `<div class="iss ${i.severity}"><span class="ic">${i.severity === "hard" ? "✕" : "!"}</span><div class="itxt"><div class="loc">${esc(
           issueLoc(i)
         )}</div><div class="desc">${esc(i.message)}</div><div class="sug">建议：${esc(issueSug(i))}</div></div></div>`
@@ -2632,7 +3839,7 @@ ${pendingBlock}`;
       } else {
         docHtml = `<div class="doc" data-act="edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
       }
-      const savenote = state === "hard" ? `<span class="savenote hard">改好 ${hard2.length} 处硬错才能保存</span>` : state === "soft" ? `<span class="savenote soft">${soft2.length} 处可斟酌，仍可保存</span>` : "";
+      const savenote = state === "hard" ? `<span class="savenote hard">改好 ${hard3.length} 处硬错才能保存</span>` : state === "soft" ? `<span class="savenote soft">${soft3.length} 处可斟酌，仍可保存</span>` : "";
       return `<div class="result-page">
       <div class="result-fixed">
         <div class="top"><div class="result-title"><div class="htitle">归档结果</div>
@@ -2658,6 +3865,59 @@ ${pendingBlock}`;
       <div class="result-footer"><div class="acts"><button class="ghost" data-act="reroll">重新生成</button>
         ${savenote}
         <button class="save${state === "hard" || candEditing ? " off" : ""}" data-act="save"${state === "hard" || candEditing ? " disabled" : ""}>保存</button></div></div>
+    </div>`;
+    }
+    function renderSummaryResult() {
+      const c = summaryCand;
+      const v = c.validation;
+      const hard3 = v.issues.filter((issue) => issue.severity === "hard");
+      const soft3 = v.issues.filter((issue) => issue.severity === "soft");
+      const state = !v.ok ? "hard" : soft3.length ? "soft" : "ok";
+      const ratio = c.sourceChars > 0 ? (c.sourceChars / Math.max(1, c.body.length)).toFixed(1) : "—";
+      const verify = state === "ok" ? `<div class="verify ok"><span class="mk">✓</span><span class="vt">普通 Archive 结构通过</span><span class="vs">${v.segments.length} 个事件段</span></div>` : state === "soft" ? `<div class="verify soft"><span class="mk">!</span><span class="vt">结构无硬错 · 有 ${soft3.length} 处可斟酌</span><span class="vs">软疑不拦 · 可直接应用</span></div>` : `<div class="verify hard"><span class="mk">✕</span><span class="vt">结构有硬错 · 无法应用</span><span class="vs">${hard3.length} 处 · 须改或重新生成</span></div>`;
+      const issueList = state === "ok" ? "" : `<div class="issues">${(state === "hard" ? hard3 : soft3).map(
+        (issue) => `<div class="iss ${issue.severity}"><span class="ic">${issue.severity === "hard" ? "✕" : "!"}</span><div class="itxt"><div class="loc">${esc(issueLoc(issue))}</div><div class="desc">${esc(issue.message)}</div><div class="sug">建议：${esc(issueSug(issue))}</div></div></div>`
+      ).join("")}</div>`;
+      let docHtml;
+      if (summaryCandEditing) {
+        docHtml = `<textarea class="editdoc" data-el="summary-editdoc">${esc(c.body)}</textarea>
+        <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="summary-edit-cancel">取消</span><span class="savem" data-act="summary-edit-save">应用改动</span></div>`;
+      } else if (summaryMode === "debug") {
+        docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+      } else {
+        docHtml = `<div class="doc" data-act="summary-edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
+      }
+      const applyNote = state === "hard" ? `<span class="savenote hard">改好 ${hard3.length} 处硬错才能应用</span>` : state === "soft" ? `<span class="savenote soft">${soft3.length} 处可斟酌，仍可应用</span>` : "";
+      const archiveFloors = c.round.archiveFloors.length ? c.round.archiveFloors.join("、") : "无";
+      const fluxFloors = c.round.fluxFloors.length ? c.round.fluxFloors.join("、") : "无";
+      return `<div class="result-page">
+      <div class="result-fixed">
+        <div class="top"><div class="result-title"><div class="htitle">摘要 → 大总结结果</div>
+          <div class="hmeta">来源至层 ${c.sourceThrough}　·　压缩 ${c.sourceChars} <span class="ar">→</span> ~${c.body.length} 字　·　约 ${ratio} : 1</div></div>
+          <span class="grow"></span>${dnToggle()}<span class="discard" data-act="summary-discard">放弃</span></div>
+        <div class="result-status">
+          ${flash ? `<div class="warnbar${flash.includes("✓") ? " okbar" : ""}">${esc(flash)}</div>` : ""}
+          ${summaryRerollFailureHtml()}
+          ${verify}
+        </div>
+      </div>
+      <div class="result-scroll">
+        ${issueList}
+        <div class="runtime-summary" style="margin-bottom:12px">
+          <div><b>Archive Context</b> 全部在场档案 · 层 ${esc(archiveFloors)}</div>
+          <div><b>Target Flux</b> 本轮冻结来源 · 层 ${esc(fluxFloors)}</div>
+        </div>
+        <div class="cand-head"><div class="seg">
+          <button data-act="summary-mode-archive" class="${summaryMode === "archive" && !summaryCandEditing ? "on" : ""}">档案模式</button>
+          <button data-act="summary-mode-debug" class="${summaryMode === "debug" ? "on" : ""}">调试模式</button></div>
+          ${summaryCandEditing ? "" : '<span class="edit-cue">点档案任意处 · 直接编辑</span>'}</div>
+        ${docHtml}
+        <div class="guide"><div class="glab">重新生成的引导 · <b>同一批来源从头重跑</b> · 可留空</div>
+          <input data-el="summary-guide" placeholder="例如：优先保留哪段因果、动作或对白？" value="${esc(c.guidance)}"></div>
+      </div>
+      <div class="result-footer"><div class="acts"><button class="ghost" data-act="summary-reroll">重新生成</button>
+        ${applyNote}
+        <button class="save${state === "hard" || summaryCandEditing ? " off" : ""}" data-act="summary-apply"${state === "hard" || summaryCandEditing ? " disabled" : ""}>应用</button></div></div>
     </div>`;
     }
     function renderApi() {
@@ -2745,7 +4005,7 @@ ${pendingBlock}`;
     }
     function renderFullEdit() {
       const fe = fullEdit;
-      const state = session.orchestrationState(fe.id);
+      const state = fe.scope === "summary" ? session.summaryOrchestrationState(fe.id) : session.orchestrationState(fe.id);
       const status = state.customized ? `<span class="prompttag custom">自定义</span>${state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ""}` : '<span class="prompttag">跟随内置</span>';
       return `
       <div class="top"><span class="back" data-act="full-cancel" title="退出全屏">‹</span><span class="htitle">${esc(fe.label)}</span>${status}<span class="grow"></span>${state.customized ? '<span class="headact" data-act="full-reset">恢复内置最新版</span>' : ""}${dnToggle()}<span class="savem" data-act="full-save">保存</span></div>
@@ -2758,14 +4018,23 @@ ${pendingBlock}`;
           session.discard();
           cand = null;
         }
+        if (summaryCand || failedSummaryGeneration) {
+          session.discardSummary();
+          summaryCand = null;
+          failedSummaryGeneration = null;
+        }
         view = "integrity";
         fullEdit = null;
         expandMod = null;
+        summaryExpandMod = null;
         editingIdx = null;
         candEditing = false;
+        summaryCandEditing = false;
         reopenEditor = false;
+        summaryReopenEditor = false;
       }
       if (view === "result" && !cand) view = "hub";
+      if (view === "summary-result" && !summaryCand) view = "summary-setup";
       if (view === "detail" && detailStart == null) view = "timeline";
       const surface = fullEdit ? "full-edit" : view;
       const surfaceChanged = surface !== renderedSurface;
@@ -2779,13 +4048,15 @@ ${pendingBlock}`;
         return;
       }
       panelEl.classList.remove("full");
-      panelEl.classList.toggle("result", view === "result" && !!cand);
+      panelEl.classList.toggle("result", view === "result" && !!cand || view === "summary-result" && !!summaryCand);
       const map = {
         hub: renderHub,
         setup: renderSetup,
+        "summary-setup": renderSummarySetup,
         timeline: renderTimeline,
         detail: renderDetail,
         result: renderResult,
+        "summary-result": renderSummaryResult,
         api: renderApi,
         integrity: renderIntegrity,
         commitlog: renderCommitLog
@@ -2834,7 +4105,61 @@ ${pendingBlock}`;
         render();
       }
     }
+    async function runSummaryGenerationAttempt(attempt) {
+      const frozen = { ...attempt };
+      const previousCandidate = summaryCand;
+      const epoch = ++generationUiEpoch;
+      activeSummaryGenerationAttempt = frozen;
+      failedSummaryGeneration = null;
+      flash = "";
+      summaryCandEditing = false;
+      summaryReopenEditor = false;
+      showLoading(
+        frozen.kind === "initial" ? "摘要 → 大总结生成中…（冻结本轮来源）" : frozen.kind === "retry" ? "重试中…（复用同一批来源）" : "重新生成中…（同一批来源从头重跑）"
+      );
+      try {
+        const next = frozen.kind === "initial" ? await session.generateSummary(frozen.guidance) : frozen.kind === "retry" ? await session.retrySummary(frozen.guidance) : await session.regenerateSummary(previousCandidate, frozen.guidance);
+        if (epoch !== generationUiEpoch) return;
+        activeSummaryGenerationAttempt = null;
+        failedSummaryGeneration = null;
+        summaryCand = next;
+        summaryMode = "archive";
+        view = "summary-result";
+        render();
+      } catch (error) {
+        if (epoch !== generationUiEpoch) return;
+        activeSummaryGenerationAttempt = null;
+        if (error instanceof GenerationCancelledError) return;
+        failedSummaryGeneration = { attempt: frozen, message: `生成失败：${error.message}` };
+        if (frozen.kind === "reroll" && previousCandidate && session.phase === "preview") {
+          summaryCand = { ...previousCandidate, guidance: frozen.guidance };
+          view = "summary-result";
+        } else {
+          summaryCand = null;
+          view = "summary-setup";
+        }
+        doRefresh();
+        render();
+      }
+    }
     function cancelGeneration() {
+      const summaryAttempt = activeSummaryGenerationAttempt;
+      if (summaryAttempt) {
+        generationUiEpoch += 1;
+        activeSummaryGenerationAttempt = null;
+        session.cancel();
+        if (summaryAttempt.kind === "reroll") {
+          view = "summary-result";
+          flash = "已取消重新生成，原候选仍保留";
+        } else {
+          failedSummaryGeneration = { attempt: summaryAttempt, message: "已取消生成" };
+          view = "summary-setup";
+          flash = "";
+        }
+        doRefresh();
+        render();
+        return;
+      }
       const attempt = activeGenerationAttempt;
       if (!attempt) return;
       generationUiEpoch += 1;
@@ -2868,16 +4193,43 @@ ${pendingBlock}`;
       cand = null;
       await runGenerationAttempt({ kind: "initial", guidance: "", selection });
     }
+    async function startSummary() {
+      doRefresh();
+      if (snap.interrupted.length || snap.integrity.needed || session.phase !== "idle") {
+        render();
+        return;
+      }
+      summaryCand = null;
+      view = "summary-result";
+      await runSummaryGenerationAttempt({ kind: "initial", guidance: "" });
+    }
+    function retrySummaryGeneration() {
+      if (!failedSummaryGeneration || !session.summaryRetryAvailable()) return;
+      const guidance = shadow.querySelector("[data-el=summary-retry-guide]")?.value ?? "";
+      void runSummaryGenerationAttempt({ kind: "retry", guidance });
+    }
     async function reroll() {
       const g = shadow.querySelector("[data-el=guide]")?.value ?? "";
       const selection = cand?.selection ? [...cand.selection] : void 0;
       await runGenerationAttempt({ kind: "reroll", guidance: g, selection });
+    }
+    async function rerollSummary() {
+      if (!summaryCand) return;
+      const guidance = shadow.querySelector("[data-el=summary-guide]")?.value ?? "";
+      await runSummaryGenerationAttempt({ kind: "reroll", guidance });
     }
     function applyEdit() {
       const ta = shadow.querySelector("[data-el=editdoc]");
       if (!cand || !ta) return;
       cand = session.editCandidate(cand, ta.value);
       candEditing = false;
+      render();
+    }
+    function applySummaryEdit() {
+      const ta = shadow.querySelector("[data-el=summary-editdoc]");
+      if (!summaryCand || !ta) return;
+      summaryCand = session.editSummaryCandidate(summaryCand, ta.value);
+      summaryCandEditing = false;
       render();
     }
     function collectStructured(root2, kind) {
@@ -2957,6 +4309,51 @@ ${pendingBlock}`;
         render();
       }
     }
+    async function applySummaryCandidate() {
+      if (!summaryCand) return;
+      if (summaryCandEditing) {
+        flash = "请先应用或取消正在编辑的内容";
+        render();
+        return;
+      }
+      if (!summaryCand.validation.ok) {
+        flash = "有硬错，先改或重新生成";
+        render();
+        return;
+      }
+      showLoading("应用摘要 → 大总结中…");
+      try {
+        const floor = await session.applySummary(summaryCand);
+        summaryCand = null;
+        failedSummaryGeneration = null;
+        view = "hub";
+        flash = `摘要 → 大总结已应用 ✓ · 层 ${floor}`;
+        doRefresh();
+        render();
+      } catch (error) {
+        flash = `应用失败：${error.message}`;
+        if (session.phase === "idle") {
+          summaryCand = null;
+          failedSummaryGeneration = null;
+          view = "summary-setup";
+        }
+        doRefresh();
+        render();
+      }
+    }
+    function discardSummaryFlow() {
+      generationUiEpoch += 1;
+      activeSummaryGenerationAttempt = null;
+      failedSummaryGeneration = null;
+      session.discardSummary();
+      summaryCand = null;
+      summaryCandEditing = false;
+      summaryReopenEditor = false;
+      view = "hub";
+      flash = "";
+      doRefresh();
+      render();
+    }
     async function integrityRun() {
       if (!snap?.integrity.needed) return;
       showLoading("复原退役档中…");
@@ -2997,6 +4394,12 @@ ${pendingBlock}`;
       const v = parseInt(el.value, 10);
       if (Number.isFinite(v)) session.setN(v);
     }
+    function setSummaryIntervalFromInput() {
+      const el = shadow.querySelector("[data-el=summary-interval]");
+      if (!el) return;
+      const value = parseInt(el.value, 10);
+      if (Number.isFinite(value)) session.setSummaryInterval(value);
+    }
     function saveMod(which) {
       shadow.querySelectorAll(`.mod[data-mod="${which}"] textarea[data-oid]`).forEach((el) => {
         const ta = el;
@@ -3009,6 +4412,21 @@ ${pendingBlock}`;
         if (flash.includes("提示词已保存")) {
           flash = "";
           if (view === "setup") render();
+        }
+      }, 1600);
+    }
+    function saveSummaryMod(which) {
+      shadow.querySelectorAll(`[data-summary-mod="${which}"] textarea[data-soid]`).forEach((element) => {
+        const textarea = element;
+        session.setSummaryOrchestrationOverride(textarea.dataset.soid, textarea.value);
+      });
+      summaryExpandMod = null;
+      flash = `${which === "pre" ? "前置定义" : "后置思考与输出"}已保存 ✓`;
+      render();
+      setTimeout(() => {
+        if (flash.includes("已保存")) {
+          flash = "";
+          if (view === "summary-setup") render();
         }
       }, 1600);
     }
@@ -3144,23 +4562,38 @@ ${pendingBlock}`;
           break;
         case "full-open": {
           const oid = el.dataset.oid;
-          const entry = session.orchestrationEntries().find((x) => x.id === oid);
-          const ta = shadow.querySelector(`.modedit textarea[data-oid="${oid}"]`);
-          fullEdit = { id: oid, label: entry?.label ?? "提示词", value: ta?.value ?? entry?.content ?? "" };
+          const scope = el.dataset.scope === "summary" ? "summary" : "archive";
+          const entry = scope === "summary" ? session.summaryOrchestrationEntries().find((x) => x.id === oid) : session.orchestrationEntries().find((x) => x.id === oid);
+          const ta = shadow.querySelector(
+            `.modedit textarea[${scope === "summary" ? "data-soid" : "data-oid"}="${oid}"]`
+          );
+          fullEdit = { scope, id: oid, label: entry?.label ?? "提示词", value: ta?.value ?? entry?.content ?? "" };
           flash = "";
           render();
           break;
         }
         case "full-save": {
           const ta = shadow.querySelector("[data-el=fulltext]");
-          if (fullEdit && ta) session.setOrchestrationOverride(fullEdit.id, ta.value);
+          if (fullEdit && ta) {
+            if (fullEdit.scope === "summary") {
+              session.setSummaryOrchestrationOverride(fullEdit.id, ta.value);
+            } else {
+              session.setOrchestrationOverride(fullEdit.id, ta.value);
+            }
+          }
           fullEdit = null;
           flash = "提示词已保存 ✓";
           render();
           break;
         }
         case "full-reset":
-          if (fullEdit) session.resetOrchestrationOverride(fullEdit.id);
+          if (fullEdit) {
+            if (fullEdit.scope === "summary") {
+              session.resetSummaryOrchestrationOverride(fullEdit.id);
+            } else {
+              session.resetOrchestrationOverride(fullEdit.id);
+            }
+          }
           fullEdit = null;
           flash = "已恢复内置最新版 ✓";
           render();
@@ -3196,12 +4629,29 @@ ${pendingBlock}`;
           flash = "";
           render();
           break;
+        case "toggle-summary":
+          ev.stopPropagation();
+          session.setSummaryEnabled(session.config.summaryEnabled === false);
+          render();
+          break;
+        case "toggle-timeline":
+          ev.stopPropagation();
+          session.setTimelineEnabled(session.config.timelineEnabled === false);
+          render();
+          break;
         case "setup":
           view = "setup";
           flash = "";
           expandMod = null;
           doRefresh();
           resetRangeSelection();
+          render();
+          break;
+        case "summary-setup":
+          view = "summary-setup";
+          flash = "";
+          summaryExpandMod = null;
+          doRefresh();
           render();
           break;
         case "integrity-open":
@@ -3223,11 +4673,20 @@ ${pendingBlock}`;
         case "run":
           void startArchive();
           break;
+        case "summary-run":
+          void startSummary();
+          break;
         case "cancel-generation":
           cancelGeneration();
           break;
         case "retry-generation":
           retryGeneration();
+          break;
+        case "summary-retry":
+          retrySummaryGeneration();
+          break;
+        case "summary-failed-discard":
+          discardSummaryFlow();
           break;
         case "range-all":
           resetRangeSelection();
@@ -3249,6 +4708,18 @@ ${pendingBlock}`;
           session.setN(session.config.n + 50);
           doRefresh();
           resetRangeSelection();
+          render();
+          break;
+        case "summary-interval-dec":
+          setSummaryIntervalFromInput();
+          session.setSummaryInterval(session.config.summaryInterval - 10);
+          doRefresh();
+          render();
+          break;
+        case "summary-interval-inc":
+          setSummaryIntervalFromInput();
+          session.setSummaryInterval(session.config.summaryInterval + 10);
+          doRefresh();
           render();
           break;
         case "mod-toggle": {
@@ -3276,6 +4747,31 @@ ${pendingBlock}`;
           flash = "已全部使用内置最新版 ✓";
           render();
           break;
+        case "summary-mod-toggle": {
+          const mod = el.dataset.mod;
+          summaryExpandMod = summaryExpandMod === mod ? null : mod;
+          render();
+          break;
+        }
+        case "summary-mod-cancel":
+          summaryExpandMod = null;
+          render();
+          break;
+        case "summary-mod-reset":
+          session.resetSummaryOrchestrationOverride(el.dataset.oid);
+          flash = "已恢复内置最新版 ✓";
+          render();
+          break;
+        case "summary-mod-save":
+          saveSummaryMod(el.dataset.mod);
+          break;
+        case "summary-prompt-reset-all":
+          session.resetAllSummaryOrchestrationOverrides();
+          summaryExpandMod = null;
+          fullEdit = null;
+          flash = "已全部使用内置最新版 ✓";
+          render();
+          break;
         case "api-save": {
           const sel = shadow.querySelector("[data-el=connection-profile]");
           session.setConnectionProfile(sel?.value ?? null);
@@ -3295,6 +4791,9 @@ ${pendingBlock}`;
           flash = "";
           doRefresh();
           render();
+          break;
+        case "summary-discard":
+          discardSummaryFlow();
           break;
         case "mode-archive":
           mode = "archive";
@@ -3319,6 +4818,29 @@ ${pendingBlock}`;
           render();
           break;
         }
+        case "summary-mode-archive":
+          summaryMode = "archive";
+          if (summaryReopenEditor) {
+            summaryCandEditing = true;
+            summaryReopenEditor = false;
+          } else {
+            summaryCandEditing = false;
+          }
+          render();
+          break;
+        case "summary-mode-debug": {
+          if (summaryCandEditing) {
+            const ta = shadow.querySelector("[data-el=summary-editdoc]");
+            if (ta && summaryCand) summaryCand = session.editSummaryCandidate(summaryCand, ta.value);
+            summaryReopenEditor = true;
+          } else {
+            summaryReopenEditor = false;
+          }
+          summaryMode = "debug";
+          summaryCandEditing = false;
+          render();
+          break;
+        }
         case "edit-doc":
           if (mode === "archive") {
             candEditing = true;
@@ -3330,6 +4852,19 @@ ${pendingBlock}`;
           break;
         case "edit-cancel":
           candEditing = false;
+          render();
+          break;
+        case "summary-edit-doc":
+          if (summaryMode === "archive") {
+            summaryCandEditing = true;
+            render();
+          }
+          break;
+        case "summary-edit-save":
+          applySummaryEdit();
+          break;
+        case "summary-edit-cancel":
+          summaryCandEditing = false;
           render();
           break;
         case "repair": {
@@ -3351,6 +4886,12 @@ ${pendingBlock}`;
         case "save":
           void save();
           break;
+        case "summary-reroll":
+          void rerollSummary();
+          break;
+        case "summary-apply":
+          void applySummaryCandidate();
+          break;
       }
     });
     shadow.addEventListener("change", (ev) => {
@@ -3359,6 +4900,10 @@ ${pendingBlock}`;
         setNFromInput();
         doRefresh();
         resetRangeSelection();
+        render();
+      } else if (t.matches?.("[data-el=summary-interval]")) {
+        setSummaryIntervalFromInput();
+        doRefresh();
         render();
       } else if (t.matches?.("[data-el=range-floor]")) {
         const input = t;
@@ -3370,6 +4915,17 @@ ${pendingBlock}`;
           rangeThrough = floors.filter((x) => x < floor).pop() ?? null;
         }
         render();
+      }
+    });
+    shadow.addEventListener("input", (ev) => {
+      const target = ev.target;
+      if (target.matches?.("[data-el=summary-guide]") && summaryCand) {
+        summaryCand = { ...summaryCand, guidance: target.value };
+      } else if (target.matches?.("[data-el=summary-retry-guide]") && failedSummaryGeneration) {
+        failedSummaryGeneration = {
+          ...failedSummaryGeneration,
+          attempt: { ...failedSummaryGeneration.attempt, guidance: target.value }
+        };
       }
     });
     const panelScroll = panelEl;
@@ -3402,18 +4958,24 @@ ${pendingBlock}`;
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
       failedGeneration = null;
+      activeSummaryGenerationAttempt = null;
+      failedSummaryGeneration = null;
       root.style.display = "block";
       panelOffset = { x: 0, y: 0 };
       panelMoved = false;
       renderedSurface = null;
       view = "hub";
       cand = null;
+      summaryCand = null;
       detailStart = null;
       detailCurIdx = null;
       editingIdx = null;
       candEditing = false;
       reopenEditor = false;
+      summaryCandEditing = false;
+      summaryReopenEditor = false;
       expandMod = null;
+      summaryExpandMod = null;
       fullEdit = null;
       rangeThrough = null;
       flash = "";
@@ -3426,17 +4988,23 @@ ${pendingBlock}`;
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
       failedGeneration = null;
+      activeSummaryGenerationAttempt = null;
+      failedSummaryGeneration = null;
       root.style.display = "none";
       session.cancel();
       session.discard();
+      session.discardSummary();
     }
     function destroy() {
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
       failedGeneration = null;
+      activeSummaryGenerationAttempt = null;
+      failedSummaryGeneration = null;
       if (session.phase !== "committing") {
         session.cancel();
         session.discard();
+        session.discardSummary();
       }
       panelWindow.removeEventListener("resize", onViewportChange);
       panelWindow.visualViewport?.removeEventListener("resize", onViewportChange);
@@ -3490,6 +5058,8 @@ ${pendingBlock}`;
     const needed = [
       "getChatMessages",
       "setChatMessages",
+      "createChatMessages",
+      "deleteChatMessages",
       "getLastMessageId",
       "generateRaw",
       "getVariables",
@@ -3513,60 +5083,106 @@ ${pendingBlock}`;
     }
     const doc = topDocument();
     const inIframe = doc !== document;
+    let reconcileFeatureRuntime = () => null;
+    let stopFeatureEnablementListener = () => {
+    };
     const panel = createPanel(session, doc);
     doc.body.appendChild(panel.root);
     console.info(TAG2, CSS2, `面板已挂到 ${inIframe ? "顶层主页面" : "本页"} body`);
     let observedBoundary = session.config.boundary ?? 0;
     let reminderBlocked = false;
-    let reminderTimer = null;
     let chatReloadTimer = null;
-    let activeChatIdentity = runtimeCurrentChatIdentity();
-    const refreshReminderBaseline = () => {
+    let pendingChatIdentity = runtimeCurrentChatIdentity();
+    let chatSwitchPending = false;
+    let openAfterChatReload = false;
+    session.chatState.reset(pendingChatIdentity);
+    const runtimeRegexUpdater = typeof g.updateTavernRegexesWith === "function" ? g.updateTavernRegexesWith : void 0;
+    const regexDepthController = createRegexDepthController({
+      updateTavernRegexesWith: runtimeRegexUpdater,
+      warn: (message, error) => {
+        if (error === void 0) console.warn(TAG2, CSS2, message);
+        else console.warn(TAG2, CSS2, message, error);
+      }
+    });
+    const featureRuntimeEnabled = () => session.config.timelineEnabled || session.config.summaryEnabled;
+    const syncRegexDepth = (head) => {
+      if (!featureRuntimeEnabled()) return;
+      regexDepthController.request(head.regexWindow);
+    };
+    const openPanel = () => {
+      if (chatSwitchPending) {
+        openAfterChatReload = true;
+        return;
+      }
+      if (!featureRuntimeEnabled()) {
+        const identity = runtimeCurrentChatIdentity();
+        session.chatState.reset(identity);
+        pendingChatIdentity = identity;
+        session.config = loadConfig(deps);
+        observedBoundary = session.config.boundary ?? 0;
+        reminderBlocked = false;
+        reconcileFeatureRuntime();
+      }
+      panel.open();
+    };
+    const refreshReminderBaseline = (read) => {
       try {
-        const snapshot = session.refresh();
+        const snapshot = session.refresh(read);
         observedBoundary = snapshot.boundary;
         reminderBlocked = snapshot.interrupted.length > 0 || snapshot.integrity.needed;
+        return snapshot;
       } catch (e) {
         reminderBlocked = true;
         console.warn("[记忆归档] 提醒基线刷新失败：", e);
+        return null;
       }
     };
-    const checkReminder = () => {
-      reminderTimer = null;
-      if (reminderBlocked || session.phase !== "idle" || panel.root.style.display !== "none") return;
-      const currentFloor = deps.getLastMessageId();
+    const checkReminder = (head, summaryTrigger) => {
+      if (chatSwitchPending || reminderBlocked || session.phase !== "idle" || panel.root.style.display !== "none") return;
       const boundary = Math.max(observedBoundary, session.config.boundary ?? 0);
-      const notice = buildReminderNotice({
-        currentFloor,
-        boundary,
-        n: session.config.n,
-        lastDismissedFloor: session.config.lastDismissedFloor
+      const decision = buildReminderDecision({
+        timeline: {
+          currentFloor: head.currentFloor,
+          boundary,
+          n: session.config.n,
+          lastDismissedFloor: session.config.lastDismissedFloor
+        },
+        summary: {
+          currentFloor: head.currentFloor,
+          latestArchiveFloor: head.latestLiveArchiveFloor,
+          interval: session.config.summaryInterval,
+          lastRemindedFloor: session.config.summaryLastRemindedFloor
+        },
+        summaryTrigger,
+        timelineEnabled: session.config.timelineEnabled,
+        summaryEnabled: session.config.summaryEnabled
       });
-      if (!notice) return;
+      if (!decision) return;
       try {
         if (typeof toastr === "undefined" || typeof toastr.info !== "function") return;
+        const isTimeline = decision.kind === "timeline";
         const shown = toastr.info(
-          `已可总结 ${notice.from}–${notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。`,
-          "记忆归档",
+          isTimeline ? `已可总结 ${decision.notice.from}–${decision.notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。` : `距上次摘要 → 大总结已 ${decision.notice.distance} 层，点击打开`,
+          isTimeline ? "记忆归档" : "摘要 → 大总结",
           {
             timeOut: 8e3,
             extendedTimeOut: 2e3,
             closeButton: true,
             preventDuplicates: true,
             escapeHtml: true,
-            onclick: () => panel.open()
+            onclick: openPanel
           }
         );
         if (shown === null || shown === void 0) return;
-        session.config.lastDismissedFloor = notice.currentFloor;
+        if (isTimeline) {
+          session.config.lastDismissedFloor = decision.notice.currentFloor;
+        } else {
+          session.config.summaryLastRemindedFloor = decision.notice.currentFloor;
+        }
         session.persist();
       } catch (e) {
         console.warn("[记忆归档] 轻提醒播出失败：", e);
       }
-    };
-    const scheduleReminderCheck = () => {
-      if (reminderTimer !== null) clearTimeout(reminderTimer);
-      reminderTimer = setTimeout(checkReminder, 200);
     };
     const reloadForChangedChat = () => {
       chatReloadTimer = null;
@@ -3579,56 +5195,95 @@ ${pendingBlock}`;
         session.config = loadConfig(deps);
         observedBoundary = session.config.boundary ?? 0;
         reminderBlocked = false;
-        refreshReminderBaseline();
-        scheduleReminderCheck();
+        const startedSnapshot = reconcileFeatureRuntime();
+        const snapshot = featureRuntimeEnabled() ? startedSnapshot ?? refreshReminderBaseline() : null;
+        if (snapshot && snapshot !== startedSnapshot) syncRegexDepth(snapshot);
+        chatSwitchPending = false;
+        if (openAfterChatReload) {
+          openAfterChatReload = false;
+          openPanel();
+        } else if (snapshot) {
+          checkReminder(snapshot, snapshot.summaryTrigger);
+        }
       } catch (e) {
         reminderBlocked = true;
         console.warn("[记忆归档] 切换聊天后重载配置失败：", e);
       }
     };
-    refreshReminderBaseline();
     appendInexistentScriptButtons([{ name: BUTTON_NAME, visible: true }]);
     const ev = getButtonEvent(BUTTON_NAME);
     console.info(TAG2, CSS2, "按钮事件名 =", ev);
-    eventOn(ev, () => {
+    const buttonSubscriptions = [];
+    buttonSubscriptions.push(eventOn(ev, () => {
       console.info(TAG2, CSS2, "按钮被点击 → 打开面板");
       try {
-        panel.open();
+        openPanel();
       } catch (e) {
         console.error("[记忆归档] 打开面板失败：", e);
       }
-    });
+    }));
     try {
-      eventOn(BUTTON_NAME, () => {
+      buttonSubscriptions.push(eventOn(BUTTON_NAME, () => {
         console.info(TAG2, CSS2, "（兜底事件）按钮名事件触发 → 打开面板");
-        panel.open();
-      });
+        openPanel();
+      }));
     } catch {
     }
     const reminderEvents = resolveReminderEventNames(runtimeTavernEventTypes());
-    eventOn(reminderEvents.MESSAGE_SENT, scheduleReminderCheck);
-    eventOn(reminderEvents.MESSAGE_RECEIVED, scheduleReminderCheck);
-    eventOn(reminderEvents.CHAT_CHANGED, (chatFileName) => {
-      const eventIdentity = typeof chatFileName === "string" && chatFileName ? chatFileName : runtimeCurrentChatIdentity();
-      if (eventIdentity && eventIdentity === activeChatIdentity) {
-        refreshReminderBaseline();
-        scheduleReminderCheck();
-        return;
+    let chatActivity = null;
+    const bindFeatureActivity = () => {
+      if (chatActivity) return;
+      chatActivity = bindChatActivityMonitor({
+        state: session.chatState,
+        events: reminderEvents,
+        eventOn: (eventType, listener) => eventOn(eventType, listener),
+        initialChatIdentity: pendingChatIdentity,
+        getCurrentChatIdentity: runtimeCurrentChatIdentity,
+        onHeadActivity: (head) => {
+          syncRegexDepth(head);
+          checkReminder(head);
+        },
+        onArchiveInvalidated: (read) => {
+          syncRegexDepth(read);
+          const snapshot = refreshReminderBaseline(read);
+          if (snapshot) checkReminder(snapshot, snapshot.summaryTrigger);
+        },
+        onChatChanged: (chatIdentity) => {
+          chatSwitchPending = true;
+          reminderBlocked = true;
+          pendingChatIdentity = chatIdentity;
+          panel.close();
+          if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+          chatReloadTimer = setTimeout(reloadForChangedChat, 150);
+        }
+      });
+    };
+    reconcileFeatureRuntime = () => {
+      if (!featureRuntimeEnabled()) {
+        chatActivity?.destroy();
+        chatActivity = null;
+        regexDepthController.restoreDefault();
+        return null;
       }
-      activeChatIdentity = eventIdentity;
-      if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
-      chatReloadTimer = setTimeout(reloadForChangedChat, 150);
+      if (chatActivity) return null;
+      bindFeatureActivity();
+      const snapshot = refreshReminderBaseline();
+      if (snapshot) {
+        syncRegexDepth(snapshot);
+        checkReminder(snapshot, snapshot.summaryTrigger);
+      }
+      return snapshot;
+    };
+    stopFeatureEnablementListener = session.onFeatureEnablementChanged(() => {
+      reconcileFeatureRuntime();
     });
-    eventOn(reminderEvents.MESSAGE_DELETED, () => {
-      if (reminderTimer !== null) clearTimeout(reminderTimer);
-      reminderTimer = setTimeout(() => {
-        reminderTimer = null;
-        refreshReminderBaseline();
-      }, 200);
-    });
+    reconcileFeatureRuntime();
     $(window).on("pagehide", () => {
-      if (reminderTimer !== null) clearTimeout(reminderTimer);
       if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+      chatActivity?.destroy();
+      regexDepthController.destroy();
+      stopFeatureEnablementListener();
+      for (const subscription of buttonSubscriptions) subscription.stop();
       updateScriptButtonsWith((buttons) => buttons.filter((b) => b.name !== BUTTON_NAME));
       panel.destroy();
     });

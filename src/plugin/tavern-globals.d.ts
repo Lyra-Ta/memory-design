@@ -4,13 +4,52 @@
  */
 
 // —— 数据 / 生成 ——
+type TavernRuntimeRecord = Record<string, unknown>;
+type TavernRuntimeMessage = {
+  message_id: number;
+  name: string;
+  role: 'system' | 'assistant' | 'user';
+  is_hidden: boolean;
+  message: string;
+  data: TavernRuntimeRecord;
+  extra: TavernRuntimeRecord;
+  /** 当前运行时在 include_swipes=false 时也会带回这三项兼容字段。 */
+  swipe_id?: number;
+  swipes?: string[];
+  swipes_data?: TavernRuntimeRecord[];
+  swipes_info?: TavernRuntimeRecord[];
+};
+type TavernRuntimeMessageCreating = {
+  name?: string;
+  role: 'system' | 'assistant' | 'user';
+  is_hidden?: boolean;
+  message: string;
+  data?: TavernRuntimeRecord;
+  extra?: TavernRuntimeRecord;
+};
+type TavernRuntimeMessagesRefreshOption = {
+  refresh?: 'none' | 'affected' | 'all';
+};
+type TavernRuntimeCreateMessagesOption = TavernRuntimeMessagesRefreshOption & {
+  /** @deprecated 请使用 insert_before。 */
+  insert_at?: number | 'end';
+  insert_before?: number | 'end';
+};
 declare function getChatMessages(
   range: string | number,
   option?: unknown,
-): Array<{ message_id: number; message: string; [k: string]: unknown }>;
+): TavernRuntimeMessage[];
 declare function setChatMessages(
   messages: Array<{ message_id: number; message: string }>,
-  option?: { refresh?: 'none' | 'affected' | 'all' },
+  option?: TavernRuntimeMessagesRefreshOption,
+): Promise<void>;
+declare function createChatMessages(
+  messages: TavernRuntimeMessageCreating[],
+  option?: TavernRuntimeCreateMessagesOption,
+): Promise<void>;
+declare function deleteChatMessages(
+  message_ids: number[],
+  option?: TavernRuntimeMessagesRefreshOption,
 ): Promise<void>;
 declare function getLastMessageId(): number;
 declare function generateRaw(config: unknown): Promise<unknown>;
@@ -18,6 +57,26 @@ declare function stopGenerationById(generation_id: string): boolean;
 declare function stopAllGeneration(): boolean;
 declare function getVariables(option: unknown): Record<string, unknown>;
 declare function insertOrAssignVariables(variables: Record<string, unknown>, option: unknown): unknown;
+
+// —— 酒馆正则（本插件只需要当前预设与深度字段的最小契约） ——
+type TavernRuntimeRegex = {
+  id: string;
+  enabled: boolean;
+  min_depth: number | null;
+  max_depth: number | null;
+  [key: string]: unknown;
+};
+type TavernRuntimeRegexOption = {
+  type: 'preset';
+  name: 'in_use';
+};
+type TavernRuntimeRegexUpdater = (
+  regexes: TavernRuntimeRegex[],
+) => TavernRuntimeRegex[] | Promise<TavernRuntimeRegex[]>;
+declare function updateTavernRegexesWith(
+  updater: TavernRuntimeRegexUpdater,
+  option: TavernRuntimeRegexOption,
+): Promise<TavernRuntimeRegex[]>;
 
 // —— 脚本按钮 / 事件 / 杂项 ——
 declare function appendInexistentScriptButtons(buttons: Array<{ name: string; visible: boolean }>): void;

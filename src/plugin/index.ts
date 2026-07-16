@@ -5,11 +5,18 @@
 
 import { loadConfig } from './config';
 import {
-  buildReminderNotice,
+  bindChatActivityMonitor,
+  type ChatActivityMonitor,
+  type EventSubscription,
+} from './chat-events';
+import type { ChatReadSnapshot } from './chat-state';
+import {
+  buildReminderDecision,
   resolveReminderEventNames,
   type ReminderEventKey,
 } from './reminder';
-import { ArchiverSession } from './session';
+import { createRegexDepthController } from './regex-controller';
+import { ArchiverSession, type Snapshot } from './session';
 import { createTavernDeps } from './tavern';
 import { createPanel } from './ui';
 
@@ -79,6 +86,8 @@ function init(): void {
   const needed = [
     'getChatMessages',
     'setChatMessages',
+    'createChatMessages',
+    'deleteChatMessages',
     'getLastMessageId',
     'generateRaw',
     'getVariables',
@@ -105,73 +114,139 @@ function init(): void {
 
   const doc = topDocument();
   const inIframe = doc !== document;
+  // Session 的开关 setter 会发布变更；具体对齐逻辑在正则控制器与事件处理
+  // 函数齐备后再赋值，前端无需理解运行时生命周期。
+  let reconcileFeatureRuntime = (): Snapshot | null => null;
+  let stopFeatureEnablementListener = (): void => {};
   const panel = createPanel(session, doc);
   doc.body.appendChild(panel.root);
   console.info(TAG, CSS, `面板已挂到 ${inIframe ? '顶层主页面' : '本页'} body`);
 
-  // 提醒热路径不扫聊天：只读 q + 会话内存配置。完整扫描仅用于启动/切聊天/删楼。
+  // 提醒热路径不扫聊天：统一读 q + 会话内存配置。完整扫描仅用于启动/切聊天/删楼/正文变更。
   let observedBoundary = session.config.boundary ?? 0;
   let reminderBlocked = false;
-  let reminderTimer: ReturnType<typeof setTimeout> | null = null;
   let chatReloadTimer: ReturnType<typeof setTimeout> | null = null;
-  let activeChatIdentity = runtimeCurrentChatIdentity();
+  let pendingChatIdentity = runtimeCurrentChatIdentity();
+  let chatSwitchPending = false;
+  let openAfterChatReload = false;
+  session.chatState.reset(pendingChatIdentity);
 
-  const refreshReminderBaseline = (): void => {
+  const runtimeRegexUpdater = typeof g.updateTavernRegexesWith === 'function'
+    ? g.updateTavernRegexesWith as typeof updateTavernRegexesWith
+    : undefined;
+  const regexDepthController = createRegexDepthController({
+    updateTavernRegexesWith: runtimeRegexUpdater,
+    warn: (message, error) => {
+      if (error === undefined) console.warn(TAG, CSS, message);
+      else console.warn(TAG, CSS, message, error);
+    },
+  });
+  const featureRuntimeEnabled = (): boolean =>
+    session.config.timelineEnabled || session.config.summaryEnabled;
+  const syncRegexDepth = (head: Pick<Snapshot, 'regexWindow'>): void => {
+    if (!featureRuntimeEnabled()) return;
+    regexDepthController.request(head.regexWindow);
+  };
+
+  const openPanel = (): void => {
+    if (chatSwitchPending) {
+      // 真切聊天后的短防抖窗内不许旧 config 接触新聊天；重载完成后补开。
+      openAfterChatReload = true;
+      return;
+    }
+    // 两项全关时没有 CHAT_CHANGED 监听；用户手动打开就是一次显式同步点。
+    // 重新读取当前 chat 配置，既避免跨聊天沿用旧开关，也允许新聊天按全局
+    // 默认重新启用后台。手动面板本身随后仍会做自己的 fresh scan。
+    if (!featureRuntimeEnabled()) {
+      const identity = runtimeCurrentChatIdentity();
+      session.chatState.reset(identity);
+      pendingChatIdentity = identity;
+      session.config = loadConfig(deps);
+      observedBoundary = session.config.boundary ?? 0;
+      reminderBlocked = false;
+      reconcileFeatureRuntime();
+    }
+    panel.open();
+  };
+
+  const refreshReminderBaseline = (read?: ChatReadSnapshot): Snapshot | null => {
     try {
-      const snapshot = session.refresh();
+      const snapshot = session.refresh(read);
       observedBoundary = snapshot.boundary;
       reminderBlocked = snapshot.interrupted.length > 0 || snapshot.integrity.needed;
+      return snapshot;
     } catch (e) {
       // 基线不可信时宁可不提醒，不用错边界 nag 用户。
       reminderBlocked = true;
       console.warn('[记忆归档] 提醒基线刷新失败：', e);
+      return null;
     }
   };
 
-  const checkReminder = (): void => {
-    reminderTimer = null;
-    if (reminderBlocked || session.phase !== 'idle' || panel.root.style.display !== 'none') return;
+  /** 只消费已取得的 q / 缓存 x，不再自行读楼层或扫描正文。 */
+  const checkReminder = (
+    head: Pick<ChatReadSnapshot, 'currentFloor' | 'latestLiveArchiveFloor'>,
+    summaryTrigger?: Snapshot['summaryTrigger'],
+  ): void => {
+    if (
+      chatSwitchPending ||
+      reminderBlocked ||
+      session.phase !== 'idle' ||
+      panel.root.style.display !== 'none'
+    ) return;
 
-    const currentFloor = deps.getLastMessageId();
     // 实测 marker 基线能修正导入聊天；commit 后 config.boundary 又能立即超过旧快照。
     const boundary = Math.max(observedBoundary, session.config.boundary ?? 0);
-    const notice = buildReminderNotice({
-      currentFloor,
-      boundary,
-      n: session.config.n,
-      lastDismissedFloor: session.config.lastDismissedFloor,
+    const decision = buildReminderDecision({
+      timeline: {
+        currentFloor: head.currentFloor,
+        boundary,
+        n: session.config.n,
+        lastDismissedFloor: session.config.lastDismissedFloor,
+      },
+      summary: {
+        currentFloor: head.currentFloor,
+        latestArchiveFloor: head.latestLiveArchiveFloor,
+        interval: session.config.summaryInterval,
+        lastRemindedFloor: session.config.summaryLastRemindedFloor,
+      },
+      summaryTrigger,
+      timelineEnabled: session.config.timelineEnabled,
+      summaryEnabled: session.config.summaryEnabled,
     });
-    if (!notice) return;
+    if (!decision) return;
 
     try {
       if (typeof toastr === 'undefined' || typeof toastr.info !== 'function') return;
+      const isTimeline = decision.kind === 'timeline';
       const shown = toastr.info(
-        `已可总结 ${notice.from}–${notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。`,
-        '记忆归档',
+        isTimeline
+          ? `已可总结 ${decision.notice.from}–${decision.notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。`
+          : `距上次摘要 → 大总结已 ${decision.notice.distance} 层，点击打开`,
+        isTimeline ? '记忆归档' : '摘要 → 大总结',
         {
           timeOut: 8000,
           extendedTimeOut: 2000,
           closeButton: true,
           preventDuplicates: true,
           escapeHtml: true,
-          onclick: () => panel.open(),
+          onclick: openPanel,
         },
       );
       if (shown === null || shown === undefined) return;
 
       // toastr 没有稳定的双按钮 API：成功播出就视为本次已告知。
-      // 点击会打开面板；关闭/超时/忽略则自然成为“暂不”，+50 层才再播。
-      session.config.lastDismissedFloor = notice.currentFloor;
+      if (isTimeline) {
+        // 点击会打开面板；关闭/超时/忽略则自然成为“暂不”，+50 层才再播。
+        session.config.lastDismissedFloor = decision.notice.currentFloor;
+      } else {
+        session.config.summaryLastRemindedFloor = decision.notice.currentFloor;
+      }
       session.persist();
     } catch (e) {
       // 提示失败不记静默基点，保留下次事件重试机会。
       console.warn('[记忆归档] 轻提醒播出失败：', e);
     }
-  };
-
-  const scheduleReminderCheck = (): void => {
-    if (reminderTimer !== null) clearTimeout(reminderTimer);
-    reminderTimer = setTimeout(checkReminder, 200);
   };
 
   const reloadForChangedChat = (): void => {
@@ -182,72 +257,121 @@ function init(): void {
       return;
     }
     try {
-      // 生成/预览属于旧聊天，切换时关掉并丢弃；panel 持有同一 session 对象可继续复用。
+      // 正常情况已同步关掉；若切换恰逢 commit，当时 close 会被保护，这里在提交结束后补关。
       panel.close();
       session.config = loadConfig(deps);
       observedBoundary = session.config.boundary ?? 0;
       reminderBlocked = false;
-      refreshReminderBaseline();
-      scheduleReminderCheck();
+      // 新聊天可能继承不同的功能开关：先启停共享后台。若本来就在运行，
+      // reconcile 不会重复绑定，此处仍需为新聊天重建一次权威快照。
+      const startedSnapshot = reconcileFeatureRuntime();
+      const snapshot = featureRuntimeEnabled()
+        ? startedSnapshot ?? refreshReminderBaseline()
+        : null;
+      if (snapshot && snapshot !== startedSnapshot) syncRegexDepth(snapshot);
+      chatSwitchPending = false;
+      if (openAfterChatReload) {
+        openAfterChatReload = false;
+        openPanel();
+      } else if (snapshot) {
+        checkReminder(snapshot, snapshot.summaryTrigger);
+      }
     } catch (e) {
       reminderBlocked = true;
       console.warn('[记忆归档] 切换聊天后重载配置失败：', e);
     }
   };
 
-  refreshReminderBaseline();
-
   // 3) 注册按钮 + 绑定点击事件
   appendInexistentScriptButtons([{ name: BUTTON_NAME, visible: true }]);
   const ev = getButtonEvent(BUTTON_NAME);
   console.info(TAG, CSS, '按钮事件名 =', ev);
-  eventOn(ev, () => {
+  const buttonSubscriptions: EventSubscription[] = [];
+  buttonSubscriptions.push(eventOn(ev, () => {
     console.info(TAG, CSS, '按钮被点击 → 打开面板');
     try {
-      panel.open();
+      openPanel();
     } catch (e) {
       console.error('[记忆归档] 打开面板失败：', e);
     }
-  });
+  }));
 
   // 兜底：万一 getButtonEvent 事件在这个版本不触发，也监听通用按钮事件名做对照
   try {
-    eventOn(BUTTON_NAME, () => {
+    buttonSubscriptions.push(eventOn(BUTTON_NAME, () => {
       console.info(TAG, CSS, '（兜底事件）按钮名事件触发 → 打开面板');
-      panel.open();
-    });
+      openPanel();
+    }));
   } catch {
     /* 忽略 */
   }
 
-  // 聊天增长事件只跑轻量数学；切聊天/删楼是低频安全点，才重扫基线。
+  // 聊天事件只在这一处按需绑定、防抖、解绑；每个事件批次只生产一份共享 q/扫描快照。
   const reminderEvents = resolveReminderEventNames(runtimeTavernEventTypes());
-  eventOn(reminderEvents.MESSAGE_SENT, scheduleReminderCheck);
-  eventOn(reminderEvents.MESSAGE_RECEIVED, scheduleReminderCheck);
-  eventOn(reminderEvents.CHAT_CHANGED, (chatFileName: unknown) => {
-    const eventIdentity =
-      typeof chatFileName === 'string' && chatFileName ? chatFileName : runtimeCurrentChatIdentity();
-    if (eventIdentity && eventIdentity === activeChatIdentity) {
-      // setChatMessages(refresh:'all') 也可能发同一聊天的 CHAT_CHANGED；只校正基线，不丢预览。
-      refreshReminderBaseline();
-      scheduleReminderCheck();
-      return;
+  let chatActivity: ChatActivityMonitor | null = null;
+
+  const bindFeatureActivity = (): void => {
+    if (chatActivity) return;
+    chatActivity = bindChatActivityMonitor({
+      state: session.chatState,
+      events: reminderEvents,
+      eventOn: (eventType, listener) => eventOn(eventType, listener),
+      initialChatIdentity: pendingChatIdentity,
+      getCurrentChatIdentity: runtimeCurrentChatIdentity,
+      onHeadActivity: head => {
+        syncRegexDepth(head);
+        checkReminder(head);
+      },
+      onArchiveInvalidated: read => {
+        // setChatMessages(refresh:'all') 也可能发同一聊天的 CHAT_CHANGED；只校正基线，不丢预览。
+        syncRegexDepth(read);
+        const snapshot = refreshReminderBaseline(read);
+        if (snapshot) checkReminder(snapshot, snapshot.summaryTrigger);
+      },
+      onChatChanged: chatIdentity => {
+        // 监视器已同步 reset 旧 head；这里同步冻结 UI/config，延迟只负责合并重载。
+        chatSwitchPending = true;
+        reminderBlocked = true;
+        pendingChatIdentity = chatIdentity;
+        panel.close();
+        if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+        chatReloadTimer = setTimeout(reloadForChangedChat, 150);
+      },
+    });
+  };
+
+  reconcileFeatureRuntime = (): Snapshot | null => {
+    if (!featureRuntimeEnabled()) {
+      chatActivity?.destroy();
+      chatActivity = null;
+      // 先停监听再改正则，避免 updateTavernRegexesWith 触发的 CHAT_CHANGED
+      // 又被本插件消费；控制器会串行覆盖尚未开始的动态窗口请求。
+      regexDepthController.restoreDefault();
+      return null;
     }
-    activeChatIdentity = eventIdentity;
-    if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
-    chatReloadTimer = setTimeout(reloadForChangedChat, 150);
+
+    if (chatActivity) return null;
+    bindFeatureActivity();
+    const snapshot = refreshReminderBaseline();
+    if (snapshot) {
+      syncRegexDepth(snapshot);
+      checkReminder(snapshot, snapshot.summaryTrigger);
+    }
+    return snapshot;
+  };
+
+  // 初始配置决定是否真正启动共享后台；两项全关时这里只做一次幂等默认深度恢复。
+  stopFeatureEnablementListener = session.onFeatureEnablementChanged(() => {
+    reconcileFeatureRuntime();
   });
-  eventOn(reminderEvents.MESSAGE_DELETED, () => {
-    if (reminderTimer !== null) clearTimeout(reminderTimer);
-    reminderTimer = setTimeout(() => {
-      reminderTimer = null;
-      refreshReminderBaseline();
-    }, 200);
-  });
+  reconcileFeatureRuntime();
 
   $(window).on('pagehide', () => {
-    if (reminderTimer !== null) clearTimeout(reminderTimer);
     if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+    chatActivity?.destroy();
+    regexDepthController.destroy();
+    stopFeatureEnablementListener();
+    for (const subscription of buttonSubscriptions) subscription.stop();
     updateScriptButtonsWith(buttons => buttons.filter(b => b.name !== BUTTON_NAME));
     panel.destroy();
   });

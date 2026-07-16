@@ -5,6 +5,7 @@ import {
   buildLocatorTable,
   deriveBoundary,
   hasOrphanPending,
+  latestLiveArchiveFloor,
   liveEntries,
   totalLiveSize,
   type MessageLike,
@@ -139,4 +140,15 @@ test('选择器：liveEntries / totalLiveSize / deriveBoundary / hasOrphanPendin
 test('hasOrphanPending 命中孤立 pending（崩溃断点）', () => {
   const table = buildLocatorTable([msg(400, '<World_Archive_pending>半截</World_Archive_pending>')]);
   assert.equal(hasOrphanPending(table), true);
+});
+
+test('x 与 boundary 同表派生但语义独立：old/pending 不计入 x', () => {
+  const table = buildLocatorTable([
+    msg(200, '<World_Archive>普通 Archive</World_Archive>'),
+    msg(300, '<World_Archive_pending>候选</World_Archive_pending>'),
+    msg(400, '<World_Archive>\n时间轴\n<!-- archived: 350 -->\n</World_Archive>'),
+    msg(500, '<old_World_Archive>更高层的退役档</old_World_Archive>'),
+  ]);
+  assert.equal(latestLiveArchiveFloor(table), 400);
+  assert.equal(deriveBoundary(table), 350);
 });

@@ -115,6 +115,21 @@ export function liveEntries(table: LocatorEntry[]): LocatorEntry[] {
   return table.filter(e => e.generation === 'live');
 }
 
+/**
+ * 最近一份完整在场 World Archive 所在的消息层。
+ *
+ * 这是“摘要 → 总结”之后要用的 x，与 marker 的 through / boundary
+ * 是两个独立概念：x 看档案所在层，boundary 看已覆盖到哪层。
+ */
+export function latestLiveArchiveFloor(table: LocatorEntry[]): number | null {
+  let latest: number | null = null;
+  for (const entry of table) {
+    if (entry.generation !== 'live') continue;
+    if (latest === null || entry.messageId > latest) latest = entry.messageId;
+  }
+  return latest;
+}
+
 /** 在场档案的总体量——回答「当前档案共占 ~X」 */
 export function totalLiveSize(table: LocatorEntry[]): number {
   return liveEntries(table).reduce((sum, e) => sum + e.size, 0);

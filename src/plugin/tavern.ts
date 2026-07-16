@@ -9,6 +9,7 @@ import type {
   ConnectionProfileOption,
   GenerateRawArgs,
   RolePrompt,
+  TavernMessage,
   VarScope,
 } from './deps';
 
@@ -88,6 +89,26 @@ function profileMaxTokens(profile: RuntimeConnectionProfile | undefined): number
   return 8192;
 }
 
+/**
+ * 只显式携带本插件声明过的消息字段，避免把酒馆内部的临时对象泄进架子层。
+ * role 必须保留：压缩 2 的空白占位只能识别 assistant 消息。
+ */
+function mapChatMessage(message: ReturnType<typeof getChatMessages>[number]): TavernMessage {
+  return {
+    message_id: message.message_id,
+    message: message.message,
+    name: message.name,
+    role: message.role,
+    is_hidden: message.is_hidden,
+    data: message.data,
+    extra: message.extra,
+    swipe_id: message.swipe_id,
+    swipes: message.swipes,
+    swipes_data: message.swipes_data,
+    swipes_info: message.swipes_info,
+  };
+}
+
 export function createTavernDeps(): ArchiverTavernDeps {
   const profileControllers = new Map<string, AbortController>();
 
@@ -102,6 +123,11 @@ export function createTavernDeps(): ArchiverTavernDeps {
     profileControllers.set(generationId, controller);
     try {
       const profile = service.getProfile?.(profileId);
+      // Connection Manager 这里的 preset / instruct 不是酒馆提示词上下文：
+      // - preset 只转成连接配置的采样参数；
+      // - instruct 只在 Text Completion 下把下方 ordered_prompts 序列化成后端模板。
+      // 它们不会追加角色卡、世界书、聊天历史或当前提示词预设条目；真正的消息仍只有
+      // config.ordered_prompts。保留这两项，才能正确复用 Profile 的采样与文本后端格式。
       const result = await service.sendRequest(
         profileId,
         config.ordered_prompts,
@@ -125,9 +151,10 @@ export function createTavernDeps(): ArchiverTavernDeps {
   }
 
   return {
-    getChatMessages: (range: string | number) =>
-      getChatMessages(range).map(m => ({ message_id: m.message_id, message: m.message })),
+    getChatMessages: (range: string | number) => getChatMessages(range).map(mapChatMessage),
     setChatMessages: (messages, option) => setChatMessages(messages, option),
+    createChatMessages: (messages, option) => createChatMessages(messages, option),
+    deleteChatMessages: (messageIds, option) => deleteChatMessages(messageIds, option),
     getLastMessageId: () => getLastMessageId(),
     generateRaw: async (config: GenerateRawArgs) => {
       if (config.connection_profile_id) {

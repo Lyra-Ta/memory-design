@@ -5,11 +5,26 @@
  * 页面：
  *   hub(01) / 大总结时间轴化内页(05) / 时间轴spine(02) / 档案阅读(03)
  *   / 归档结果窗 通过·软疑·硬错·调试(06/07/08/09) / API 配置(10) / 完整性回退(11)
- * 编辑写回（03 就地改既存档 / 04 结构化）留作下一步；候选手改(结果窗)已接。
+ * 编辑写回（03 就地改既存档 / 04 结构化）与候选手改（结果窗）均已接。
  */
 
-import { MIN_N, parseArchiveBody, serializeContainers, type Container, type LocatorEntry, type ValidationIssue } from '../core';
-import { GenerationCancelledError, type ArchiverSession, type Candidate, type Snapshot } from './session';
+import {
+  MIN_N,
+  MIN_SUMMARY_INTERVAL,
+  parseArchiveBody,
+  serializeContainers,
+  type Container,
+  type LocatorEntry,
+  type ValidationIssue,
+} from '../core';
+import {
+  GenerationCancelledError,
+  type ArchiverSession,
+  type Candidate,
+  type Snapshot,
+  type SummaryCandidate,
+} from './session';
+import type { SummaryPromptId } from './summary-orchestration';
 
 const CSS = `
 :host{all:initial;position:fixed !important;inset:0 !important;z-index:2147483600 !important;display:block;}
@@ -65,13 +80,23 @@ const CSS = `
 .wrap .squares{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .wrap .sq{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 15px 15px;min-height:120px;display:flex;flex-direction:column;cursor:pointer;transition:.16s;}
 .wrap .sq:hover{border-color:var(--acc);transform:translateY(-1px);box-shadow:0 8px 22px -14px rgba(120,92,60,.5);}
+.wrap .sqtop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;min-height:18px;}
 .wrap .sq .dot{width:8px;height:8px;border-radius:50%;background:var(--acc);margin-bottom:11px;}
+.wrap .sqtop .dot{margin-bottom:0;}
+.wrap .feature-switch{appearance:none;-webkit-appearance:none;position:relative;width:31px;height:18px;flex:0 0 auto;border:1px solid var(--line);border-radius:999px;background:var(--field);cursor:pointer;transition:background .16s,border-color .16s,box-shadow .16s;padding:0;}
+.wrap .feature-switch::after{content:"";position:absolute;width:12px;height:12px;left:2px;top:2px;border-radius:50%;background:var(--mut);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:transform .16s,background .16s;}
+.wrap .feature-switch[aria-checked="true"]{background:var(--acc);border-color:var(--acc);}
+.wrap .feature-switch[aria-checked="true"]::after{background:#fff;transform:translateX(13px);}
+.wrap.night .feature-switch[aria-checked="true"]::after{background:#26221e;}
+.wrap .feature-switch:hover{box-shadow:0 0 0 3px var(--acc-soft);}
+.wrap .feature-switch:focus-visible{outline:2px solid var(--acc);outline-offset:2px;}
 .wrap .sq .t{font-size:14px;font-weight:600;letter-spacing:.3px;}
 .wrap .updot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft);margin-left:7px;vertical-align:1px;}
 .wrap .sq .d{font-size:11px;color:var(--mut);margin-top:5px;line-height:1.6;}
 .wrap .sq .sp{flex:1;}
 .wrap .sq .stat{font-size:11px;color:var(--ink2);}
 .wrap .sq .stat b{color:var(--acc);font-weight:600;}
+.wrap .sq .stat.disabled{color:var(--mut);}
 .wrap .sq .stat.due{display:flex;align-items:center;gap:6px;color:var(--acc);font-weight:500;}
 .wrap .sq .stat.due .pin{width:6px;height:6px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 3px var(--acc-soft);flex:0 0 auto;}
 .wrap .sq.tbd{background:transparent;border-style:dashed;cursor:default;}
@@ -323,6 +348,11 @@ const CSS = `
 .wrap .genfail .gtxt{min-width:0;line-height:1.55;}
 .wrap .retrybtn{flex:0 0 auto;border:1px solid var(--warn);background:transparent;color:var(--warn);font:inherit;font-size:10.5px;padding:5px 9px;border-radius:7px;cursor:pointer;}
 .wrap .retrybtn:hover{background:var(--warn-soft);}
+.wrap .summary-fail{display:block;cursor:default;}
+.wrap .summary-fail .guide{margin:10px 0 0;}
+.wrap .summary-fail .retryrow{display:flex;align-items:center;gap:10px;margin-top:9px;}
+.wrap .summary-fail .retryrow .subhint{margin:0;flex:1;}
+.wrap .summary-fail .retrybtn[disabled]{opacity:.45;cursor:not-allowed;}
 
 /* mobile fallback：脚本会再按 visualViewport 精确定位；这里保证脚本尚未运行时也不重排内部 UI。 */
 @media (max-width:640px), (pointer:coarse) and (max-height:600px){
@@ -352,7 +382,10 @@ function renderDoc(containers: Container[]): string {
   const p: string[] = ['<div class="shell">&lt;World_Archive&gt;</div>'];
   for (const c of containers) {
     const [o, cl] = c.kind === 'segment' ? ['[', ']'] : ['《', '》'];
-    p.push(`<div class="ctitle">${o}${label(c.title, c.time)}${cl}</div>`);
+    const head = c.kind === 'segment'
+      ? [c.title, c.keywords, c.time].filter(Boolean).map(x => esc(x!)).join(' | ')
+      : label(c.title, c.time);
+    p.push(`<div class="ctitle">${o}${head}${cl}</div>`);
     if (c.summary) p.push(`<div class="big">${esc(c.summary)}</div>`);
     for (const ex of c.looseExcerpts ?? []) p.push(`<div class="exc"><span class="d">·</span> ${esc(ex.text)}</div>`);
     for (const f of c.fragments) {
@@ -379,6 +412,14 @@ function issueLoc(i: ValidationIssue): string {
     FRAGMENT_TIME_MISSING: '片段缺时间字段',
     FRAGMENT_NO_EXCERPT: '片段有小总结无摘录',
     BRACKET_UNBALANCED: '摘录引号疑似不闭合',
+    ARCHIVED_MARKER_FORBIDDEN: '普通档含覆盖标记',
+    SEGMENT_TOKEN_BROKEN: '事件段标题符号不完整',
+    NO_SEGMENT: '无普通事件段',
+    CONTAINER_UNEXPECTED: '出现时间轴容器',
+    SEGMENT_SUMMARY_EMPTY: '事件段总结为空',
+    SEGMENT_TITLE_MISSING: '事件段缺标题',
+    SEGMENT_KEYWORDS_MISSING: '事件段缺关键词',
+    SEGMENT_TIME_MISSING: '事件段缺时间',
   };
   return m[i.code] ?? i.code;
 }
@@ -395,11 +436,29 @@ function issueSug(i: ValidationIssue): string {
     FRAGMENT_TIME_MISSING: '补上时间范围便于定位；也可留着。',
     FRAGMENT_NO_EXCERPT: '看要不要补一两条摘录；也可留着。',
     BRACKET_UNBALANCED: '检查「」是否配对。',
+    ARCHIVED_MARKER_FORBIDDEN: '删除 archived 覆盖标记；摘要 → 大总结不能接管时间轴覆盖链。',
+    SEGMENT_TOKEN_BROKEN: '检查事件段的 [] 与竖线字段是否完整。',
+    NO_SEGMENT: '改为一个或多个普通扁平 [] 事件段，或重新生成。',
+    CONTAINER_UNEXPECTED: '摘要 → 大总结应使用 [] 事件段；可手改或保留后应用。',
+    SEGMENT_SUMMARY_EMPTY: '为该事件段补上客观总结，或重新生成。',
+    SEGMENT_TITLE_MISSING: '补一个简短事件标题；也可保留。',
+    SEGMENT_KEYWORDS_MISSING: '补上情绪／感知关键词字段；也可保留。',
+    SEGMENT_TIME_MISSING: '补上起止时间字段；也可保留。',
   };
   return m[i.code] ?? (i.severity === 'hard' ? '点档案任意处改，或重新生成。' : '可斟酌，仍可保存。');
 }
 
-type View = 'hub' | 'setup' | 'timeline' | 'detail' | 'result' | 'api' | 'integrity' | 'commitlog';
+type View =
+  | 'hub'
+  | 'setup'
+  | 'summary-setup'
+  | 'timeline'
+  | 'detail'
+  | 'result'
+  | 'summary-result'
+  | 'api'
+  | 'integrity'
+  | 'commitlog';
 
 const COMMIT_STATUS_LABEL: Record<string, string> = {
   prepared: '已就绪 · 未落盘',
@@ -416,6 +475,16 @@ interface GenerationAttempt {
 
 interface FailedGeneration {
   attempt: GenerationAttempt;
+  message: string;
+}
+
+interface SummaryGenerationAttempt {
+  kind: 'initial' | 'retry' | 'reroll';
+  guidance: string;
+}
+
+interface FailedSummaryGeneration {
+  attempt: SummaryGenerationAttempt;
   message: string;
 }
 
@@ -451,7 +520,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   let view: View = 'hub';
   let snap: Snapshot | null = null;
   let cand: Candidate | null = null;
+  let summaryCand: SummaryCandidate | null = null;
   let mode: 'archive' | 'debug' = 'archive';
+  let summaryMode: 'archive' | 'debug' = 'archive';
   let night = true;
   let flash = '';
   let nodes: EvNode[] = [];
@@ -459,13 +530,18 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   let detailCurIdx: number | null = null; // 详情页当前滚到的容器下标（滚动联动 sticky 抬头 + 返回定位）
   let editingIdx: number | null = null; // 正在结构化编辑的容器下标（null = 无）
   let expandMod: 'pre' | 'runtime' | 'post' | null = null;
-  let fullEdit: { id: string; label: string; value: string } | null = null; // 提示词全屏编辑
+  let summaryExpandMod: 'pre' | 'runtime' | 'post' | null = null;
+  let fullEdit: { scope: 'archive' | 'summary'; id: string; label: string; value: string } | null = null; // 提示词全屏编辑
   let showRetired = false; // 时间轴是否显示退役档（默认藏起冷存旧档，去历史杂音）
   let candEditing = false;
+  let summaryCandEditing = false;
   // 编辑档案时切去调试模式：先把草稿并入候选（不丢改动），并记住回来要重开编辑器。
   let reopenEditor = false;
+  let summaryReopenEditor = false;
   let activeGenerationAttempt: GenerationAttempt | null = null;
   let failedGeneration: FailedGeneration | null = null;
+  let activeSummaryGenerationAttempt: SummaryGenerationAttempt | null = null;
+  let failedSummaryGeneration: FailedSummaryGeneration | null = null;
   /** 关闭/取消后使旧 async continuation 自动失效。 */
   let generationUiEpoch = 0;
   let renderedSurface: string | null = null;
@@ -591,7 +667,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   function rangeSources(): Array<{ floor: number; title: string }> {
     if (!snap) return [];
     const byFloor = new Map<number, string>();
-    for (const e of session.collect(snap.table).sources) {
+    for (const e of session.collect(snap).sources) {
       if (byFloor.has(e.messageId)) continue;
       const title = parseArchiveBody(e.content).map(c => c.title).find(Boolean) || '（无题）';
       byFloor.set(e.messageId, title);
@@ -614,6 +690,25 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     return `<div class="warnbar genfail"><span class="gtxt">${esc(failedGeneration.message)}</span><button type="button" class="retrybtn" data-act="retry-generation">按相同参数重试</button></div>`;
   }
 
+  function summaryInitialFailureHtml(): string {
+    const failed = failedSummaryGeneration;
+    if (!failed || failed.attempt.kind === 'reroll') return '';
+    const retryable = session.summaryRetryAvailable();
+    return `<div class="warnbar summary-fail">
+      <div class="gtxt">${esc(failed.message)}</div>
+      <div class="guide"><div class="glab">同一批来源重试的补充引导 · 可留空</div>
+        <input data-el="summary-retry-guide" placeholder="例如：优先保留某段因果、动作或对白" value="${esc(failed.attempt.guidance)}"></div>
+      <div class="retryrow"><button type="button" class="ghost" data-act="summary-failed-discard">放弃本轮</button><span class="subhint">${retryable ? '只重跑生成；来源批次保持不变' : '这次尚未冻结出可重试的来源批次，请重新开始'}</span>
+        <button type="button" class="retrybtn" data-act="summary-retry"${retryable ? '' : ' disabled'}>同一批来源重试</button></div>
+    </div>`;
+  }
+
+  function summaryRerollFailureHtml(): string {
+    const failed = failedSummaryGeneration;
+    if (!failed || failed.attempt.kind !== 'reroll') return '';
+    return `<div class="warnbar genfail"><span class="gtxt">${esc(failed.message)} · 原候选仍保留</span></div>`;
+  }
+
   function interruptedProgressText(): string {
     const log = snap?.commitLog;
     if (!log || log.status === 'completed') return '无薄日志（旧版中断），无法安全推断已进行到哪一步';
@@ -629,9 +724,16 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const s = snap;
     const liveN = s ? s.table.filter(e => e.generation === 'live').length : 0;
     const trig = s?.trigger;
+    const timelineEnabled = session.config.timelineEnabled !== false;
+    const summaryEnabled = session.config.summaryEnabled !== false;
     const due = trig?.eligible
       ? `<div class="stat due"><span class="pin"></span>该总结了 · 可总结 ${trig.range?.from}–${trig.range?.to}</div>`
       : `<div class="stat">上次总结至 <b>层 ${s?.boundary ?? 0}</b></div>`;
+    const disabledStatus = '<div class="stat disabled">未启用 · 仍可手动开始</div>';
+    const featureSwitch = (feature: 'summary' | 'timeline', enabled: boolean, label: string) => `
+      <button type="button" class="feature-switch" data-act="toggle-${feature}" role="switch"
+        aria-checked="${enabled}" aria-label="${enabled ? '关闭' : '启用'}${label}"
+        title="${enabled ? '关闭' : '启用'}${label}"></button>`;
     const integrityBar = s?.integrity.needed && !s.interrupted.length
       ? `<div class="warnbar" data-act="integrity-open">⚠ 检测到 ${s.integrity.toRestore.length} 份需复原的退役档 · 点此处理</div>`
       : '';
@@ -653,6 +755,15 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const promptUpdateDot = promptUpdates
       ? `<span class="updot" title="${promptUpdates} 处自定义提示词有内置新版"></span>`
       : '';
+    const summaryPromptUpdates = session.summaryPromptOverrideSummary().updates;
+    const summaryPromptUpdateDot = summaryPromptUpdates
+      ? `<span class="updot" title="${summaryPromptUpdates} 处摘要 → 大总结提示词有内置新版"></span>`
+      : '';
+    const summaryTrig = s?.summaryTrigger;
+    const latestArchive = s?.latestLiveArchiveFloor ?? null;
+    const summaryStatus = latestArchive === null
+      ? `<div class="stat${summaryTrig?.eligible ? ' due' : ''}">${summaryTrig?.eligible ? '<span class="pin"></span>' : ''}尚无 Archive · 已累计 <b>${summaryTrig?.distance ?? 0} 层</b></div>`
+      : `<div class="stat${summaryTrig?.eligible ? ' due' : ''}">${summaryTrig?.eligible ? '<span class="pin"></span>' : ''}最近 Archive 层 <b>${latestArchive}</b> · 距今 ${summaryTrig?.distance ?? 0} 层</div>`;
     return `
       <div class="head"><div class="title">记忆档案</div><span class="grow"></span>${dnToggle()}</div>
       <div class="body">
@@ -675,13 +786,15 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         </div>
         <div class="grouplab">总结设置 · 单次设好基本不动</div>
         <div class="squares">
-          <div class="sq" data-act="setup">
-            <span class="dot"></span><div class="t">大总结时间轴化${promptUpdateDot}</div>
-            <div class="d">预设提示词 ＋ 架构</div><div class="sp"></div>${due}
+          <div class="sq" data-act="summary-setup">
+            <div class="sqtop"><span class="dot"></span>${featureSwitch('summary', summaryEnabled, '摘要 → 大总结')}</div>
+            <div class="t">摘要 → 大总结${summaryPromptUpdateDot}</div>
+            <div class="sp"></div>${summaryEnabled ? summaryStatus : disabledStatus}
           </div>
-          <div class="sq tbd">
-            <span class="dot"></span><div class="t">正文 → 摘要</div>
-            <div class="d">与现架构未贴合</div><div class="sp"></div><div class="foot">预留 · 待定</div>
+          <div class="sq" data-act="setup">
+            <div class="sqtop"><span class="dot"></span>${featureSwitch('timeline', timelineEnabled, '大总结时间轴化')}</div>
+            <div class="t">大总结时间轴化${promptUpdateDot}</div>
+            <div class="d">进一步压缩大总结的内容</div><div class="sp"></div>${timelineEnabled ? due : disabledStatus}
           </div>
         </div>
         ${commitLogLink}
@@ -703,7 +816,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const integrityBlocked = !!s?.integrity.needed;
     const canRun = selected.length > 0 && !interrupted && !integrityBlocked;
     const { pre, post } = orchParts();
-    const collected = snap ? session.collect(snap.table) : null;
+    const collected = snap ? session.collect(snap) : null;
     const promptSummary = session.promptOverrideSummary();
 
     const moduleEdit = (entries: { id: string; content: string }[]) => {
@@ -791,6 +904,90 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
           <div class="mod" data-mod="post">
             <div class="modhead" data-act="mod-toggle" data-mod="post"><span class="mt">后置提示词</span>${moduleTags(post)}<span class="grow"></span>${moduleActions(post, 'post')}</div>
             ${postEdit}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderSummarySetup(): string {
+    const s = snap;
+    const trigger = s?.summaryTrigger;
+    const x = s?.latestLiveArchiveFloor ?? null;
+    const q = s?.currentFloor ?? 0;
+    const interrupted = (s?.interrupted.length ?? 0) > 0;
+    const integrityBlocked = !!s?.integrity.needed;
+    // interval 只决定何时提醒；手动开始仅受真实会话互斥／完整性状态约束。
+    const canRun = session.phase === 'idle' && !interrupted && !integrityBlocked;
+    const entries = session.summaryOrchestrationEntries();
+    const pre = entries.find(entry => entry.id === 'pre')!;
+    const runtime = entries.find(entry => entry.id === 'runtime')!;
+    const post = entries.find(entry => entry.id === 'post')!;
+    const promptSummary = session.summaryPromptOverrideSummary();
+    const archiveFloors = [...new Set((s?.table ?? [])
+      .filter(entry => entry.generation === 'live')
+      .map(entry => entry.messageId))].sort((a, b) => a - b);
+
+    const moduleTags = (id: SummaryPromptId) => {
+      const state = session.summaryOrchestrationState(id);
+      if (!state.customized) return '<span class="prompttag">跟随内置</span>';
+      return `<span class="prompttag custom">自定义</span>${
+        state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ''
+      }`;
+    };
+    const moduleActions = (entry: typeof pre, modKey: 'pre' | 'post') => {
+      if (summaryExpandMod !== modKey) return '<span class="pen">✎</span>';
+      const state = session.summaryOrchestrationState(entry.id);
+      return `<span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
+        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">恢复内置最新版</span>` : ''}
+        <span class="headact" data-act="summary-mod-cancel">取消</span>
+        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span>`;
+    };
+    const moduleEdit = (entry: typeof pre) => summaryExpandMod === entry.id
+      ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(entry.content)}</textarea></div>`
+      : '';
+    const runtimeEdit = summaryExpandMod === 'runtime'
+      ? `<div class="modedit"><div class="runtime-summary">
+          <div><b>Archive Context</b> 全部完整 &lt;World_Archive&gt;${archiveFloors.length ? ` · 层 ${archiveFloors.join('、')}` : ' · 无'}</div>
+          <div><b>Target Flux</b> ${x === null ? `最早楼层至当前层 ${q}` : `层 ${x} 之后至当前层 ${q}`}的完整 Flux / Causal_Flux</div>
+          <div><b>补充引导</b> 首次可空；失败重试与结果重跑均可手动填写</div>
+        </div></div>`
+      : '';
+    const reminderText = trigger?.eligible
+      ? `已达到 ${trigger.interval} 层提醒间隔；这只是提醒，仍可随时手动开始`
+      : `距最近 Archive ${trigger?.distance ?? 0} 层 · 到层 ${trigger?.nextFloor ?? q} 时提醒；仍可现在手动开始`;
+
+    return `
+      <div class="top"><span class="back" data-act="home">‹</span><span class="htitle">摘要 → 大总结</span><span class="grow"></span>${dnToggle()}</div>
+      <div class="body">
+        ${flash ? `<div class="warnbar${flash.includes('✓') ? ' okbar' : ''}">${esc(flash)}</div>` : ''}
+        ${summaryInitialFailureHtml()}
+        ${interrupted ? `<div class="warnbar">⚠ 有未完成 pending；${esc(interruptedProgressText())}；当前禁止开始摘要 → 大总结</div>` : ''}
+        ${integrityBlocked && !interrupted ? '<div class="warnbar">⚠ 档案完整性缺口尚未复原；当前禁止开始摘要 → 大总结</div>' : ''}
+        <button class="runbtn${canRun ? '' : ' off'}" data-act="summary-run"${canRun ? '' : ' disabled'}>开始生成大总结</button>
+        <div class="setwrap">
+          <div class="setrow"><span>每隔</span>
+            <span class="num"><button data-act="summary-interval-dec"${(trigger?.interval ?? session.config.summaryInterval) <= MIN_SUMMARY_INTERVAL ? ' disabled' : ''}>−</button><input data-el="summary-interval" type="number" min="${MIN_SUMMARY_INTERVAL}" step="10" value="${trigger?.interval ?? session.config.summaryInterval}" inputmode="numeric"><button data-act="summary-interval-inc">＋</button></span>
+            <span>层提醒一次</span></div>
+          <div class="subhint">${reminderText}</div>
+          <div class="subhint">最近 Archive：${x === null ? '无（x = null）' : `层 ${x}（x = ${x}）`} · 当前聊天末层 ${q}</div>
+        </div>
+        <div class="promptsec"><div class="seclab">固定三段式提示词 · 铅笔编辑</div><span class="grow"></span>
+          ${promptSummary.customized
+            ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ''}<span class="promptreset" data-act="summary-prompt-reset-all">全部使用内置最新版</span></span>`
+            : '<span class="promptfollow">自动跟随内置最新版</span>'}
+        </div>
+        <div class="mods">
+          <div class="mod" data-summary-mod="pre">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="pre"><span class="mt">${esc(pre.label)}</span>${moduleTags('pre')}<span class="grow"></span>${moduleActions(pre, 'pre')}</div>
+            ${moduleEdit(pre)}
+          </div>
+          <div class="mod ro">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="runtime"><span class="mt">${esc(runtime.label)}</span><span class="rotag">只读</span><span class="grow"></span><span class="pen">${summaryExpandMod === 'runtime' ? '▴' : '▾'}</span></div>
+            ${runtimeEdit}
+          </div>
+          <div class="mod" data-summary-mod="post">
+            <div class="modhead" data-act="summary-mod-toggle" data-mod="post"><span class="mt">${esc(post.label)}</span>${moduleTags('post')}<span class="grow"></span>${moduleActions(post, 'post')}</div>
+            ${moduleEdit(post)}
           </div>
         </div>
       </div>`;
@@ -993,6 +1190,73 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     </div>`;
   }
 
+  function renderSummaryResult(): string {
+    const c = summaryCand!;
+    const v = c.validation;
+    const hard = v.issues.filter(issue => issue.severity === 'hard');
+    const soft = v.issues.filter(issue => issue.severity === 'soft');
+    const state = !v.ok ? 'hard' : soft.length ? 'soft' : 'ok';
+    const ratio = c.sourceChars > 0 ? (c.sourceChars / Math.max(1, c.body.length)).toFixed(1) : '—';
+    const verify = state === 'ok'
+      ? `<div class="verify ok"><span class="mk">✓</span><span class="vt">普通 Archive 结构通过</span><span class="vs">${v.segments.length} 个事件段</span></div>`
+      : state === 'soft'
+        ? `<div class="verify soft"><span class="mk">!</span><span class="vt">结构无硬错 · 有 ${soft.length} 处可斟酌</span><span class="vs">软疑不拦 · 可直接应用</span></div>`
+        : `<div class="verify hard"><span class="mk">✕</span><span class="vt">结构有硬错 · 无法应用</span><span class="vs">${hard.length} 处 · 须改或重新生成</span></div>`;
+    const issueList = state === 'ok'
+      ? ''
+      : `<div class="issues">${(state === 'hard' ? hard : soft).map(issue =>
+          `<div class="iss ${issue.severity}"><span class="ic">${issue.severity === 'hard' ? '✕' : '!'}</span><div class="itxt"><div class="loc">${esc(issueLoc(issue))}</div><div class="desc">${esc(issue.message)}</div><div class="sug">建议：${esc(issueSug(issue))}</div></div></div>`,
+        ).join('')}</div>`;
+
+    let docHtml: string;
+    if (summaryCandEditing) {
+      docHtml = `<textarea class="editdoc" data-el="summary-editdoc">${esc(c.body)}</textarea>
+        <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="summary-edit-cancel">取消</span><span class="savem" data-act="summary-edit-save">应用改动</span></div>`;
+    } else if (summaryMode === 'debug') {
+      docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+    } else {
+      docHtml = `<div class="doc" data-act="summary-edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
+    }
+
+    const applyNote = state === 'hard'
+      ? `<span class="savenote hard">改好 ${hard.length} 处硬错才能应用</span>`
+      : state === 'soft'
+        ? `<span class="savenote soft">${soft.length} 处可斟酌，仍可应用</span>`
+        : '';
+    const archiveFloors = c.round.archiveFloors.length ? c.round.archiveFloors.join('、') : '无';
+    const fluxFloors = c.round.fluxFloors.length ? c.round.fluxFloors.join('、') : '无';
+
+    return `<div class="result-page">
+      <div class="result-fixed">
+        <div class="top"><div class="result-title"><div class="htitle">摘要 → 大总结结果</div>
+          <div class="hmeta">来源至层 ${c.sourceThrough}　·　压缩 ${c.sourceChars} <span class="ar">→</span> ~${c.body.length} 字　·　约 ${ratio} : 1</div></div>
+          <span class="grow"></span>${dnToggle()}<span class="discard" data-act="summary-discard">放弃</span></div>
+        <div class="result-status">
+          ${flash ? `<div class="warnbar${flash.includes('✓') ? ' okbar' : ''}">${esc(flash)}</div>` : ''}
+          ${summaryRerollFailureHtml()}
+          ${verify}
+        </div>
+      </div>
+      <div class="result-scroll">
+        ${issueList}
+        <div class="runtime-summary" style="margin-bottom:12px">
+          <div><b>Archive Context</b> 全部在场档案 · 层 ${esc(archiveFloors)}</div>
+          <div><b>Target Flux</b> 本轮冻结来源 · 层 ${esc(fluxFloors)}</div>
+        </div>
+        <div class="cand-head"><div class="seg">
+          <button data-act="summary-mode-archive" class="${summaryMode === 'archive' && !summaryCandEditing ? 'on' : ''}">档案模式</button>
+          <button data-act="summary-mode-debug" class="${summaryMode === 'debug' ? 'on' : ''}">调试模式</button></div>
+          ${summaryCandEditing ? '' : '<span class="edit-cue">点档案任意处 · 直接编辑</span>'}</div>
+        ${docHtml}
+        <div class="guide"><div class="glab">重新生成的引导 · <b>同一批来源从头重跑</b> · 可留空</div>
+          <input data-el="summary-guide" placeholder="例如：优先保留哪段因果、动作或对白？" value="${esc(c.guidance)}"></div>
+      </div>
+      <div class="result-footer"><div class="acts"><button class="ghost" data-act="summary-reroll">重新生成</button>
+        ${applyNote}
+        <button class="save${state === 'hard' || summaryCandEditing ? ' off' : ''}" data-act="summary-apply"${state === 'hard' || summaryCandEditing ? ' disabled' : ''}>应用</button></div></div>
+    </div>`;
+  }
+
   function renderApi(): string {
     const profiles = session.connectionProfiles();
     const cur = session.config.connectionProfileId;
@@ -1100,7 +1364,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   /** 提示词全屏编辑器（面板放大、大文本框铺满） */
   function renderFullEdit(): string {
     const fe = fullEdit!;
-    const state = session.orchestrationState(fe.id);
+    const state = fe.scope === 'summary'
+      ? session.summaryOrchestrationState(fe.id as SummaryPromptId)
+      : session.orchestrationState(fe.id);
     const status = state.customized
       ? `<span class="prompttag custom">自定义</span>${state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ''}`
       : '<span class="prompttag">跟随内置</span>';
@@ -1117,14 +1383,23 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         session.discard();
         cand = null;
       }
+      if (summaryCand || failedSummaryGeneration) {
+        session.discardSummary();
+        summaryCand = null;
+        failedSummaryGeneration = null;
+      }
       view = 'integrity';
       fullEdit = null;
       expandMod = null;
+      summaryExpandMod = null;
       editingIdx = null;
       candEditing = false;
+      summaryCandEditing = false;
       reopenEditor = false;
+      summaryReopenEditor = false;
     }
     if (view === 'result' && !cand) view = 'hub';
+    if (view === 'summary-result' && !summaryCand) view = 'summary-setup';
     if (view === 'detail' && detailStart == null) view = 'timeline';
     const surface = fullEdit ? 'full-edit' : view;
     const surfaceChanged = surface !== renderedSurface;
@@ -1139,13 +1414,15 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       return;
     }
     panelEl.classList.remove('full');
-    panelEl.classList.toggle('result', view === 'result' && !!cand);
+    panelEl.classList.toggle('result', (view === 'result' && !!cand) || (view === 'summary-result' && !!summaryCand));
     const map: Record<View, () => string> = {
       hub: renderHub,
       setup: renderSetup,
+      'summary-setup': renderSummarySetup,
       timeline: renderTimeline,
       detail: renderDetail,
       result: renderResult,
+      'summary-result': renderSummaryResult,
       api: renderApi,
       integrity: renderIntegrity,
       commitlog: renderCommitLog,
@@ -1203,7 +1480,71 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     }
   }
 
+  async function runSummaryGenerationAttempt(attempt: SummaryGenerationAttempt): Promise<void> {
+    const frozen = { ...attempt };
+    const previousCandidate = summaryCand;
+    const epoch = ++generationUiEpoch;
+    activeSummaryGenerationAttempt = frozen;
+    failedSummaryGeneration = null;
+    flash = '';
+    summaryCandEditing = false;
+    summaryReopenEditor = false;
+    showLoading(
+      frozen.kind === 'initial'
+        ? '摘要 → 大总结生成中…（冻结本轮来源）'
+        : frozen.kind === 'retry'
+          ? '重试中…（复用同一批来源）'
+          : '重新生成中…（同一批来源从头重跑）',
+    );
+
+    try {
+      const next = frozen.kind === 'initial'
+        ? await session.generateSummary(frozen.guidance)
+        : frozen.kind === 'retry'
+          ? await session.retrySummary(frozen.guidance)
+          : await session.regenerateSummary(previousCandidate!, frozen.guidance);
+      if (epoch !== generationUiEpoch) return;
+      activeSummaryGenerationAttempt = null;
+      failedSummaryGeneration = null;
+      summaryCand = next;
+      summaryMode = 'archive';
+      view = 'summary-result';
+      render();
+    } catch (error) {
+      if (epoch !== generationUiEpoch) return;
+      activeSummaryGenerationAttempt = null;
+      if (error instanceof GenerationCancelledError) return;
+      failedSummaryGeneration = { attempt: frozen, message: `生成失败：${(error as Error).message}` };
+      if (frozen.kind === 'reroll' && previousCandidate && session.phase === 'preview') {
+        summaryCand = { ...previousCandidate, guidance: frozen.guidance };
+        view = 'summary-result';
+      } else {
+        summaryCand = null;
+        view = 'summary-setup';
+      }
+      doRefresh();
+      render();
+    }
+  }
+
   function cancelGeneration(): void {
+    const summaryAttempt = activeSummaryGenerationAttempt;
+    if (summaryAttempt) {
+      generationUiEpoch += 1;
+      activeSummaryGenerationAttempt = null;
+      session.cancel();
+      if (summaryAttempt.kind === 'reroll') {
+        view = 'summary-result';
+        flash = '已取消重新生成，原候选仍保留';
+      } else {
+        failedSummaryGeneration = { attempt: summaryAttempt, message: '已取消生成' };
+        view = 'summary-setup';
+        flash = '';
+      }
+      doRefresh();
+      render();
+      return;
+    }
     const attempt = activeGenerationAttempt;
     if (!attempt) return;
     generationUiEpoch += 1;
@@ -1240,10 +1581,33 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     await runGenerationAttempt({ kind: 'initial', guidance: '', selection });
   }
 
+  async function startSummary() {
+    doRefresh();
+    if (snap!.interrupted.length || snap!.integrity.needed || session.phase !== 'idle') {
+      render();
+      return;
+    }
+    summaryCand = null;
+    view = 'summary-result';
+    await runSummaryGenerationAttempt({ kind: 'initial', guidance: '' });
+  }
+
+  function retrySummaryGeneration() {
+    if (!failedSummaryGeneration || !session.summaryRetryAvailable()) return;
+    const guidance = (shadow.querySelector('[data-el=summary-retry-guide]') as HTMLInputElement | null)?.value ?? '';
+    void runSummaryGenerationAttempt({ kind: 'retry', guidance });
+  }
+
   async function reroll() {
     const g = (shadow.querySelector('[data-el=guide]') as HTMLInputElement | null)?.value ?? '';
     const selection = cand?.selection ? [...cand.selection] : undefined;
     await runGenerationAttempt({ kind: 'reroll', guidance: g, selection });
+  }
+
+  async function rerollSummary() {
+    if (!summaryCand) return;
+    const guidance = (shadow.querySelector('[data-el=summary-guide]') as HTMLInputElement | null)?.value ?? '';
+    await runSummaryGenerationAttempt({ kind: 'reroll', guidance });
   }
 
   function applyEdit() {
@@ -1251,6 +1615,14 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     if (!cand || !ta) return;
     cand = session.editCandidate(cand, ta.value);
     candEditing = false;
+    render();
+  }
+
+  function applySummaryEdit() {
+    const ta = shadow.querySelector('[data-el=summary-editdoc]') as HTMLTextAreaElement | null;
+    if (!summaryCand || !ta) return;
+    summaryCand = session.editSummaryCandidate(summaryCand, ta.value);
+    summaryCandEditing = false;
     render();
   }
 
@@ -1343,6 +1715,54 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     }
   }
 
+  async function applySummaryCandidate() {
+    if (!summaryCand) return;
+    if (summaryCandEditing) {
+      flash = '请先应用或取消正在编辑的内容';
+      render();
+      return;
+    }
+    if (!summaryCand.validation.ok) {
+      flash = '有硬错，先改或重新生成';
+      render();
+      return;
+    }
+    showLoading('应用摘要 → 大总结中…');
+    try {
+      const floor = await session.applySummary(summaryCand);
+      summaryCand = null;
+      failedSummaryGeneration = null;
+      view = 'hub';
+      flash = `摘要 → 大总结已应用 ✓ · 层 ${floor}`;
+      doRefresh();
+      render();
+    } catch (error) {
+      flash = `应用失败：${(error as Error).message}`;
+      // y 缺失或已被正文占用时 session 会主动废止旧轮；旧候选不能继续应用或重跑。
+      if (session.phase === 'idle') {
+        summaryCand = null;
+        failedSummaryGeneration = null;
+        view = 'summary-setup';
+      }
+      doRefresh();
+      render();
+    }
+  }
+
+  function discardSummaryFlow() {
+    generationUiEpoch += 1;
+    activeSummaryGenerationAttempt = null;
+    failedSummaryGeneration = null;
+    session.discardSummary();
+    summaryCand = null;
+    summaryCandEditing = false;
+    summaryReopenEditor = false;
+    view = 'hub';
+    flash = '';
+    doRefresh();
+    render();
+  }
+
   async function integrityRun() {
     if (!snap?.integrity.needed) return;
     showLoading('复原退役档中…');
@@ -1390,6 +1810,13 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     if (Number.isFinite(v)) session.setN(v);
   }
 
+  function setSummaryIntervalFromInput() {
+    const el = shadow.querySelector('[data-el=summary-interval]') as HTMLInputElement | null;
+    if (!el) return;
+    const value = parseInt(el.value, 10);
+    if (Number.isFinite(value)) session.setSummaryInterval(value);
+  }
+
   function saveMod(which: 'pre' | 'post') {
     shadow.querySelectorAll(`.mod[data-mod="${which}"] textarea[data-oid]`).forEach(el => {
       const ta = el as HTMLTextAreaElement;
@@ -1402,6 +1829,22 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       if (flash.includes('提示词已保存')) {
         flash = '';
         if (view === 'setup') render();
+      }
+    }, 1600);
+  }
+
+  function saveSummaryMod(which: 'pre' | 'post') {
+    shadow.querySelectorAll(`[data-summary-mod="${which}"] textarea[data-soid]`).forEach(element => {
+      const textarea = element as HTMLTextAreaElement;
+      session.setSummaryOrchestrationOverride(textarea.dataset.soid as SummaryPromptId, textarea.value);
+    });
+    summaryExpandMod = null;
+    flash = `${which === 'pre' ? '前置定义' : '后置思考与输出'}已保存 ✓`;
+    render();
+    setTimeout(() => {
+      if (flash.includes('已保存')) {
+        flash = '';
+        if (view === 'summary-setup') render();
       }
     }, 1600);
   }
@@ -1545,23 +1988,40 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'full-open': {
         const oid = el!.dataset.oid!;
-        const entry = session.orchestrationEntries().find(x => x.id === oid);
-        const ta = shadow.querySelector(`.modedit textarea[data-oid="${oid}"]`) as HTMLTextAreaElement | null;
-        fullEdit = { id: oid, label: entry?.label ?? '提示词', value: ta?.value ?? entry?.content ?? '' };
+        const scope = el!.dataset.scope === 'summary' ? 'summary' : 'archive';
+        const entry = scope === 'summary'
+          ? session.summaryOrchestrationEntries().find(x => x.id === oid)
+          : session.orchestrationEntries().find(x => x.id === oid);
+        const ta = shadow.querySelector(
+          `.modedit textarea[${scope === 'summary' ? 'data-soid' : 'data-oid'}="${oid}"]`,
+        ) as HTMLTextAreaElement | null;
+        fullEdit = { scope, id: oid, label: entry?.label ?? '提示词', value: ta?.value ?? entry?.content ?? '' };
         flash = '';
         render();
         break;
       }
       case 'full-save': {
         const ta = shadow.querySelector('[data-el=fulltext]') as HTMLTextAreaElement | null;
-        if (fullEdit && ta) session.setOrchestrationOverride(fullEdit.id, ta.value);
+        if (fullEdit && ta) {
+          if (fullEdit.scope === 'summary') {
+            session.setSummaryOrchestrationOverride(fullEdit.id as SummaryPromptId, ta.value);
+          } else {
+            session.setOrchestrationOverride(fullEdit.id, ta.value);
+          }
+        }
         fullEdit = null;
         flash = '提示词已保存 ✓';
         render();
         break;
       }
       case 'full-reset':
-        if (fullEdit) session.resetOrchestrationOverride(fullEdit.id);
+        if (fullEdit) {
+          if (fullEdit.scope === 'summary') {
+            session.resetSummaryOrchestrationOverride(fullEdit.id as SummaryPromptId);
+          } else {
+            session.resetOrchestrationOverride(fullEdit.id);
+          }
+        }
         fullEdit = null;
         flash = '已恢复内置最新版 ✓';
         render();
@@ -1597,12 +2057,29 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         flash = '';
         render();
         break;
+      case 'toggle-summary':
+        ev.stopPropagation();
+        session.setSummaryEnabled(session.config.summaryEnabled === false);
+        render();
+        break;
+      case 'toggle-timeline':
+        ev.stopPropagation();
+        session.setTimelineEnabled(session.config.timelineEnabled === false);
+        render();
+        break;
       case 'setup':
         view = 'setup';
         flash = '';
         expandMod = null;
         doRefresh();
         resetRangeSelection();
+        render();
+        break;
+      case 'summary-setup':
+        view = 'summary-setup';
+        flash = '';
+        summaryExpandMod = null;
+        doRefresh();
         render();
         break;
       case 'integrity-open':
@@ -1624,11 +2101,20 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       case 'run':
         void startArchive();
         break;
+      case 'summary-run':
+        void startSummary();
+        break;
       case 'cancel-generation':
         cancelGeneration();
         break;
       case 'retry-generation':
         retryGeneration();
+        break;
+      case 'summary-retry':
+        retrySummaryGeneration();
+        break;
+      case 'summary-failed-discard':
+        discardSummaryFlow();
         break;
       case 'range-all':
         resetRangeSelection();
@@ -1650,6 +2136,18 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         session.setN(session.config.n + 50);
         doRefresh();
         resetRangeSelection();
+        render();
+        break;
+      case 'summary-interval-dec':
+        setSummaryIntervalFromInput();
+        session.setSummaryInterval(session.config.summaryInterval - 10);
+        doRefresh();
+        render();
+        break;
+      case 'summary-interval-inc':
+        setSummaryIntervalFromInput();
+        session.setSummaryInterval(session.config.summaryInterval + 10);
+        doRefresh();
         render();
         break;
       case 'mod-toggle': {
@@ -1677,6 +2175,31 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         flash = '已全部使用内置最新版 ✓';
         render();
         break;
+      case 'summary-mod-toggle': {
+        const mod = el!.dataset.mod as 'pre' | 'runtime' | 'post';
+        summaryExpandMod = summaryExpandMod === mod ? null : mod;
+        render();
+        break;
+      }
+      case 'summary-mod-cancel':
+        summaryExpandMod = null;
+        render();
+        break;
+      case 'summary-mod-reset':
+        session.resetSummaryOrchestrationOverride(el!.dataset.oid as SummaryPromptId);
+        flash = '已恢复内置最新版 ✓';
+        render();
+        break;
+      case 'summary-mod-save':
+        saveSummaryMod(el!.dataset.mod as 'pre' | 'post');
+        break;
+      case 'summary-prompt-reset-all':
+        session.resetAllSummaryOrchestrationOverrides();
+        summaryExpandMod = null;
+        fullEdit = null;
+        flash = '已全部使用内置最新版 ✓';
+        render();
+        break;
       case 'api-save': {
         const sel = shadow.querySelector('[data-el=connection-profile]') as HTMLSelectElement | null;
         session.setConnectionProfile(sel?.value ?? null);
@@ -1696,6 +2219,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         flash = '';
         doRefresh();
         render();
+        break;
+      case 'summary-discard':
+        discardSummaryFlow();
         break;
       case 'mode-archive':
         mode = 'archive';
@@ -1722,6 +2248,29 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         render();
         break;
       }
+      case 'summary-mode-archive':
+        summaryMode = 'archive';
+        if (summaryReopenEditor) {
+          summaryCandEditing = true;
+          summaryReopenEditor = false;
+        } else {
+          summaryCandEditing = false;
+        }
+        render();
+        break;
+      case 'summary-mode-debug': {
+        if (summaryCandEditing) {
+          const ta = shadow.querySelector('[data-el=summary-editdoc]') as HTMLTextAreaElement | null;
+          if (ta && summaryCand) summaryCand = session.editSummaryCandidate(summaryCand, ta.value);
+          summaryReopenEditor = true;
+        } else {
+          summaryReopenEditor = false;
+        }
+        summaryMode = 'debug';
+        summaryCandEditing = false;
+        render();
+        break;
+      }
       case 'edit-doc':
         if (mode === 'archive') {
           candEditing = true;
@@ -1733,6 +2282,19 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'edit-cancel':
         candEditing = false;
+        render();
+        break;
+      case 'summary-edit-doc':
+        if (summaryMode === 'archive') {
+          summaryCandEditing = true;
+          render();
+        }
+        break;
+      case 'summary-edit-save':
+        applySummaryEdit();
+        break;
+      case 'summary-edit-cancel':
+        summaryCandEditing = false;
         render();
         break;
       case 'repair': {
@@ -1754,16 +2316,26 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       case 'save':
         void save();
         break;
+      case 'summary-reroll':
+        void rerollSummary();
+        break;
+      case 'summary-apply':
+        void applySummaryCandidate();
+        break;
     }
   });
 
-  // N 输入框直接改
+  // 数字设置输入框直接改
   shadow.addEventListener('change', ev => {
     const t = ev.target as HTMLElement;
     if (t.matches?.('[data-el=nval]')) {
       setNFromInput();
       doRefresh();
       resetRangeSelection();
+      render();
+    } else if (t.matches?.('[data-el=summary-interval]')) {
+      setSummaryIntervalFromInput();
+      doRefresh();
       render();
     } else if (t.matches?.('[data-el=range-floor]')) {
       const input = t as HTMLInputElement;
@@ -1775,6 +2347,20 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         rangeThrough = floors.filter(x => x < floor).pop() ?? null; // 取消某层 = 该层及其后全部取消
       }
       render();
+    }
+  });
+
+  // 结果页/失败页会因模式切换或设置变化重绘；输入时就把 Guidance 草稿同步回内存，
+  // 避免用户刚写的重跑引导在一次 render 后消失。
+  shadow.addEventListener('input', ev => {
+    const target = ev.target as HTMLInputElement;
+    if (target.matches?.('[data-el=summary-guide]') && summaryCand) {
+      summaryCand = { ...summaryCand, guidance: target.value };
+    } else if (target.matches?.('[data-el=summary-retry-guide]') && failedSummaryGeneration) {
+      failedSummaryGeneration = {
+        ...failedSummaryGeneration,
+        attempt: { ...failedSummaryGeneration.attempt, guidance: target.value },
+      };
     }
   });
 
@@ -1810,18 +2396,24 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     generationUiEpoch += 1;
     activeGenerationAttempt = null;
     failedGeneration = null;
+    activeSummaryGenerationAttempt = null;
+    failedSummaryGeneration = null;
     root.style.display = 'block';
     panelOffset = { x: 0, y: 0 };
     panelMoved = false;
     renderedSurface = null;
     view = 'hub';
     cand = null;
+    summaryCand = null;
     detailStart = null;
     detailCurIdx = null;
     editingIdx = null;
     candEditing = false;
     reopenEditor = false;
+    summaryCandEditing = false;
+    summaryReopenEditor = false;
     expandMod = null;
+    summaryExpandMod = null;
     fullEdit = null;
     rangeThrough = null;
     flash = '';
@@ -1835,18 +2427,24 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     generationUiEpoch += 1;
     activeGenerationAttempt = null;
     failedGeneration = null;
+    activeSummaryGenerationAttempt = null;
+    failedSummaryGeneration = null;
     root.style.display = 'none';
     session.cancel();
     session.discard();
+    session.discardSummary();
   }
 
   function destroy() {
     generationUiEpoch += 1;
     activeGenerationAttempt = null;
     failedGeneration = null;
+    activeSummaryGenerationAttempt = null;
+    failedSummaryGeneration = null;
     if (session.phase !== 'committing') {
       session.cancel();
       session.discard();
+      session.discardSummary();
     }
     panelWindow.removeEventListener('resize', onViewportChange);
     panelWindow.visualViewport?.removeEventListener('resize', onViewportChange);

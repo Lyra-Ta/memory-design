@@ -10,14 +10,16 @@
 
 import {
   buildLocatorTable,
+  collectTargetFlux,
+  computeSummaryTriggerState,
   computeTriggerState,
-  deriveBoundary,
   detectInterruptedCommit,
   executeCommit,
   extractArchiveBlocks,
   hasCoverageMarker,
   liveEntries,
   normalizeN,
+  normalizeSummaryInterval,
   parseArchiveBody,
   parseArchiveNodes,
   planCommit,
@@ -30,14 +32,19 @@ import {
   repairArchiveOutput,
   totalLiveSize,
   validateArchive,
+  validateSummaryArchive,
   wrapArchive,
   type ArchiveNode,
   type CommitDecision,
+  type CommitDeps,
   type CommitPhase,
   type CommitStep,
   type Container,
   type LocatorEntry,
+  type LocatedFluxBlock,
   type RetireTarget,
+  type SummaryArchiveValidationResult,
+  type SummaryTriggerState,
   type TriggerState,
   type ValidationResult,
 } from '../core';
@@ -52,7 +59,7 @@ import {
   saveCommitLog,
   type CommitLog,
 } from './commit-log';
-import type { ArchiverTavernDeps } from './deps';
+import type { ArchiverTavernDeps, TavernMessage } from './deps';
 import {
   assemblePrompt,
   defaultOrchestration,
@@ -60,6 +67,17 @@ import {
   resolveOrchestration,
   type OrchestrationEntry,
 } from './orchestration';
+import {
+  assembleSummaryPrompt,
+  defaultSummaryOrchestration,
+  makeSummaryOrchestrationOverride,
+  resolveSummaryOrchestration,
+  summaryPromptFingerprint,
+  type SummaryOrchestrationEntry,
+  type SummaryPromptId,
+} from './summary-orchestration';
+import { ChatStateReader, type ChatReadSnapshot } from './chat-state';
+import type { RegexDepthWindow } from './regex-window';
 
 /** 会话阶段（单例锁的状态） */
 export type Phase = 'idle' | 'generating' | 'preview' | 'committing';
@@ -81,6 +99,14 @@ export class GenerationTimeoutError extends Error {
     const duration = timeoutMs === GENERATION_TIMEOUT_MS ? '5 分钟' : `${Math.ceil(timeoutMs / 1000)} 秒`;
     super(`生成超过 ${duration}，已自动取消`);
     this.name = 'GenerationTimeoutError';
+  }
+}
+
+/** 真切聊天后，旧聊天冻结出的候选/事务必须立即失效。 */
+export class ChatChangedDuringOperationError extends Error {
+  constructor() {
+    super('聊天已切换，已停止旧聊天的操作，未继续写入当前聊天');
+    this.name = 'ChatChangedDuringOperationError';
   }
 }
 
@@ -112,6 +138,12 @@ export interface Snapshot {
   previousFloor: number | null;
   /** 当前聊天的真实末层（直接来自 getLastMessageId；不是“最后一份档案所在层”） */
   currentFloor: number;
+  /** 最近一份完整 live World Archive 所在层 x（压缩 2 预留）。 */
+  latestLiveArchiveFloor: number | null;
+  /** 与本次 q / x 同快照的正则窗口；未来压缩 2 直接消费，不重复读聊天。 */
+  regexWindow: RegexDepthWindow;
+  /** 摘要 → 总结的轻提醒状态（只提醒，不拦手动）。 */
+  summaryTrigger: SummaryTriggerState;
   /** 实测 boundary（存活标记端点最大值 / 回退到 config.boundary / 0） */
   boundary: number;
   trigger: TriggerState;
@@ -135,6 +167,12 @@ export interface Collected {
   sources: LocatorEntry[];
   /** 既存续写上下文（带 marker、最新的一份时间轴档；同名接续时其末尾容器才会被覆写） */
   continuity: LocatorEntry | null;
+}
+
+/** collect 只消费同一时刻的 table + q，禁止在内部偷读新楼层。 */
+export interface CollectionSnapshot {
+  table: LocatorEntry[];
+  currentFloor: number;
 }
 
 /** 内存里的候选档（未点确认前零副作用） */
@@ -171,44 +209,108 @@ export interface CandidateFloorSnapshot {
 }
 
 export interface CandidateProvenance {
+  /** 生成开始时的聊天世代；真切聊天后旧候选不得再读写。 */
+  chatEpoch: number;
   sources: CandidateArchiveRef[];
   continuity: CandidateArchiveRef | null;
   floors: CandidateFloorSnapshot[];
+}
+
+/** 一次摘要 → 总结的冻结输入。重试/重 roll 不重扫聊天，只复用它。 */
+export interface SummaryRound {
+  id: string;
+  /** 本轮创建时的聊天世代；即使拿不到 chat ID，也能拦跨聊天写入。 */
+  chatEpoch: number;
+  /** 所有完整 <World_Archive>，按楼层/块位置排序。 */
+  archiveContext: string;
+  /** x < floor <= sourceThrough 的全部 Flux / Causal_Flux。 */
+  targetFlux: string;
+  archiveFloors: number[];
+  fluxFloors: number[];
+  latestArchiveFloor: number | null;
+  sourceThrough: number;
+  placeholderFloor: number;
+  sourceChars: number;
+  /** 同一轮重试不跟随中途的 API 选择变化。 */
+  connectionProfileId: string | null;
+  /** 同一轮重试使用开始时的三段提示词快照。 */
+  orchestration: SummaryOrchestrationEntry[];
+}
+
+export interface SummaryCollected {
+  archiveContext: string;
+  targetFlux: string;
+  archiveFloors: number[];
+  fluxes: LocatedFluxBlock[];
+  latestArchiveFloor: number | null;
+  sourceThrough: number;
+  sourceChars: number;
+}
+
+/** 普通总结候选：只待写入空白 y，不带覆盖 marker。 */
+export interface SummaryCandidate {
+  raw: string;
+  body: string;
+  validation: SummaryArchiveValidationResult;
+  containers: Container[];
+  sourceThrough: number;
+  placeholderFloor: number;
+  guidance: string;
+  sourceChars: number;
+  round: SummaryRound;
 }
 
 export class ArchiverSession {
   phase: Phase = 'idle';
   private activeGeneration: ActiveGeneration | null = null;
   private generationSequence = 0;
+  private readonly featureEnablementListeners = new Set<() => void>();
+  /** 当前普通总结的冻结来源；首次失败后仍保留，供同一批来源重试。 */
+  private summaryRound: SummaryRound | null = null;
+  /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
+  readonly chatState: ChatStateReader;
 
   constructor(
     private readonly deps: ArchiverTavernDeps,
     public config: ArchiverConfig,
     /** 第三参数只为可测的短超时留缝；生产默认始终是 5 分钟。 */
     private readonly generationTimeoutMs = GENERATION_TIMEOUT_MS,
-  ) {}
-
-  private get lastFloor(): number {
-    return this.deps.getLastMessageId();
+    chatState?: ChatStateReader,
+  ) {
+    this.chatState = chatState ?? new ChatStateReader(deps);
   }
 
-  /** 每次生成/提交都重新读取，不能把 UI 预览快照当作并发控制。 */
-  private currentTable(): LocatorEntry[] {
-    const q = this.lastFloor;
-    return buildLocatorTable(this.deps.getChatMessages(`0-${q}`));
+  private assertCurrentChat(expectedEpoch: number): void {
+    if (!this.chatState.isCurrentChatEpoch(expectedEpoch)) {
+      throw new ChatChangedDuringOperationError();
+    }
+  }
+
+  /** 两段提交的每次读写都在同步调用点复核聊天世代；写 await 返回后再复核一次。 */
+  private guardedCommitDeps(expectedEpoch: number): CommitDeps {
+    return {
+      getChatMessages: range => {
+        this.assertCurrentChat(expectedEpoch);
+        return this.deps.getChatMessages(range);
+      },
+      setChatMessages: async (messages, option) => {
+        this.assertCurrentChat(expectedEpoch);
+        await this.deps.setChatMessages(messages, option);
+        this.assertCurrentChat(expectedEpoch);
+      },
+    };
   }
 
   // ---- 刷新（只读，任何时候可调） -------------------------------------------
 
-  refresh(): Snapshot {
-    const q = this.lastFloor;
+  refresh(read: ChatReadSnapshot = this.chatState.scanFresh()): Snapshot {
+    const q = read.currentFloor;
     const previousFloor = this.config.lastKnownFloor;
     const p = previousFloor ?? q;
     const floorsDecreased = q < p;
 
-    const msgs = this.deps.getChatMessages(`0-${q}`);
-    const table = buildLocatorTable(msgs);
-    const boundary = deriveBoundary(table) ?? this.config.boundary ?? 0;
+    const table = read.table;
+    const boundary = read.derivedBoundary ?? this.config.boundary ?? 0;
     const interrupted = detectInterruptedCommit(table);
     const commitLog = loadCommitLog(this.deps);
     const integrity = this.integrityCheck(table);
@@ -217,6 +319,12 @@ export class ArchiverSession {
       boundary,
       n: this.config.n,
       lastDismissedFloor: this.config.lastDismissedFloor,
+    });
+    const summaryTrigger = computeSummaryTriggerState({
+      currentFloor: q,
+      latestArchiveFloor: read.latestLiveArchiveFloor,
+      interval: this.config.summaryInterval,
+      lastRemindedFloor: this.config.summaryLastRemindedFloor,
     });
 
     // 楼层没减少才接受并持久化新基线；删后先停、先修，别把破损当新常态记下去。
@@ -229,6 +337,9 @@ export class ArchiverSession {
       table,
       previousFloor,
       currentFloor: q,
+      latestLiveArchiveFloor: read.latestLiveArchiveFloor,
+      regexWindow: read.regexWindow,
+      summaryTrigger,
       boundary,
       trigger,
       interrupted,
@@ -253,7 +364,9 @@ export class ArchiverSession {
 
   /** 执行复原：把这些退役 old_ 块改回 live（顺序落盘）。 */
   async integrityRestore(toRestore: LocatorEntry[]): Promise<void> {
-    if (detectInterruptedCommit(this.currentTable()).length > 0) {
+    const read = this.chatState.scanFresh();
+    const chatEpoch = read.chatEpoch;
+    if (detectInterruptedCommit(read.table).length > 0) {
       throw new Error('检测到未完成的归档提交；必须先恢复 pending，不能同时复原退役档');
     }
     const grouped = new Map<number, LocatorEntry[]>();
@@ -264,16 +377,21 @@ export class ArchiverSession {
     }
     const byFloor = new Map<number, string>();
     for (const [messageId, entries] of grouped) {
-      let text = this.deps.getChatMessages(messageId)[0]?.message ?? '';
+      this.assertCurrentChat(chatEpoch);
+      let text = this.readFloorText(messageId);
       for (const e of entries.sort((a, b) => b.span[0] - a.span[0])) {
         text = replaceSpanExact(text, e.span, e.raw, setGeneration(e.raw, 'live'));
       }
       byFloor.set(messageId, text);
     }
     for (const [message_id, message] of byFloor) {
+      this.assertCurrentChat(chatEpoch);
       await this.deps.setChatMessages([{ message_id, message }], { refresh: 'none' });
+      this.assertCurrentChat(chatEpoch);
+      this.chatState.markDirty();
     }
-    this.config.lastKnownFloor = this.lastFloor; // 修完把 p 重置为当前 q
+    this.assertCurrentChat(chatEpoch);
+    this.config.lastKnownFloor = this.chatState.syncHead().currentFloor; // 修完把 p 重置为当前 q
     this.persist();
   }
 
@@ -283,9 +401,9 @@ export class ArchiverSession {
   // 不带的 = 原始（flux 扁平待整理），但**只消化楼层 ≤ 当前层−N 的**——最近 N 层留新鲜（= 触发上界）。
   // 显示/喂给模型前统一滤掉注释。
 
-  collect(table: LocatorEntry[], selection?: number[]): Collected {
-    const threshold = this.lastFloor - this.config.n; // 保最近 N 层不动
-    const live = liveEntries(table);
+  collect(snapshot: CollectionSnapshot, selection?: number[]): Collected {
+    const threshold = snapshot.currentFloor - this.config.n; // 保最近 N 层不动
+    const live = liveEntries(snapshot.table);
     let sources = live.filter(e => e.through === null && e.messageId <= threshold);
     if (selection) {
       const endpoint = selection.length > 0 ? Math.max(...selection) : null;
@@ -318,6 +436,263 @@ export class ArchiverSession {
       if (nodes[i].kind === 'container') return nodes[i];
     }
     return null;
+  }
+
+  /**
+   * 事务/来源校验的单层实时读取。只封装重复 I/O 形状，绝不缓存；
+   * 这些 exact read 与 q 快照分属两种安全语义。
+   */
+  private readFloorText(messageId: number): string {
+    return this.deps.getChatMessages(messageId)[0]?.message ?? '';
+  }
+
+  private readFloor(messageId: number): TavernMessage | null {
+    return this.deps.getChatMessages(messageId).find(message => message.message_id === messageId) ?? null;
+  }
+
+  private isBlankAssistant(message: TavernMessage | null): boolean {
+    return !!message && message.role === 'assistant' && message.message.trim() === '';
+  }
+
+  private clearSummaryPointer(): void {
+    this.config.summaryPlaceholderFloor = null;
+    this.persist();
+  }
+
+  /**
+   * 新一轮开始前只处理本插件记住的 y：仍是空白 assistant 才删除；
+   * 缺失或已被正文占用时一律不碰，只忘掉旧指针。随后总是在聊天末尾新建 y。
+   */
+  private async cleanRecordedSummaryPlaceholder(chatEpoch: number): Promise<void> {
+    this.assertCurrentChat(chatEpoch);
+    const y = this.config.summaryPlaceholderFloor;
+    if (y === null) return;
+    const message = this.readFloor(y);
+    if (this.isBlankAssistant(message)) {
+      this.assertCurrentChat(chatEpoch);
+      await this.deps.deleteChatMessages([y], { refresh: 'affected' });
+      this.assertCurrentChat(chatEpoch);
+      this.chatState.markDirty();
+    }
+    this.assertCurrentChat(chatEpoch);
+    this.summaryRound = null;
+    this.clearSummaryPointer();
+  }
+
+  /**
+   * 摘要 → 总结的纯收集：Archive Context 取扫描到的完整 <World_Archive>；
+   * Target Flux 只取最近 Archive 层 x 之后、sourceThrough=q 以内的完整 Flux 标签块。
+   * 两者都只作为冻结读取材料，不改写来源楼层。
+   */
+  collectSummary(read: ChatReadSnapshot): SummaryCollected {
+    const archives = liveEntries(read.table).sort(
+      (a, b) => a.messageId - b.messageId || a.span[0] - b.span[0],
+    );
+    const archiveContext = archives.length
+      ? archives
+          .map(entry => `【在场档案 · 层 ${entry.messageId}】\n${wrapArchive(stripComments(entry.content), 'live')}`)
+          .join('\n\n')
+      : '（无既存 World Archive）';
+    const fluxes = collectTargetFlux(
+      read.messages,
+      read.latestLiveArchiveFloor,
+      read.currentFloor,
+    ).filter(flux => flux.inner.trim().length > 0);
+    const targetFlux = fluxes
+      .map(flux => `【原始摘要 · 层 ${flux.floor}】\n${flux.raw}`)
+      .join('\n\n');
+    return {
+      archiveContext,
+      targetFlux,
+      archiveFloors: [...new Set(archives.map(entry => entry.messageId))],
+      fluxes,
+      latestArchiveFloor: read.latestLiveArchiveFloor,
+      sourceThrough: read.currentFloor,
+      sourceChars: fluxes.reduce((sum, flux) => sum + flux.raw.length, 0),
+    };
+  }
+
+  private ensureSummaryPlaceholder(round: SummaryRound): void {
+    this.assertCurrentChat(round.chatEpoch);
+    const current = this.readFloor(round.placeholderFloor);
+    if (this.isBlankAssistant(current)) return;
+    if (this.config.summaryPlaceholderFloor === round.placeholderFloor) this.clearSummaryPointer();
+    if (this.summaryRound?.id === round.id) this.summaryRound = null;
+    if (this.phase === 'preview') this.phase = 'idle';
+    throw new Error(`总结写入位层 ${round.placeholderFloor} 已不是空白 assistant，已停止以免覆盖正文`);
+  }
+
+  /**
+   * 手动开始永远不受间隔阈值拦截。先清理仍空白的旧 y，再以 fresh q 冻结来源、
+   * 在末尾创建一个新的空白 assistant，最后才发起独立生成。
+   */
+  async generateSummary(guidance = ''): Promise<SummaryCandidate> {
+    if (this.phase !== 'idle') throw new Error('单例锁：已有归档在进行，请先结束或退出');
+    const chatEpoch = this.chatState.currentChatEpoch();
+    await this.cleanRecordedSummaryPlaceholder(chatEpoch);
+    this.assertCurrentChat(chatEpoch);
+    const read = this.chatState.scanFresh();
+    if (read.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+    if (detectInterruptedCommit(read.table).length > 0) {
+      throw new Error('检测到未完成的归档提交；请先继续提交，再生成普通总结');
+    }
+    if (this.integrityCheck(read.table).needed) {
+      throw new Error('检测到档案完整性缺口；请先复原退役档');
+    }
+    const collected = this.collectSummary(read);
+    if (collected.fluxes.length === 0) throw new Error('最近一份 World Archive 之后没有可总结的 Flux');
+
+    const roundId = `mem-summary-${collected.sourceThrough}-${++this.generationSequence}`;
+    this.assertCurrentChat(chatEpoch);
+    await this.deps.createChatMessages(
+      [{ role: 'assistant', message: '' }],
+      { insert_before: 'end', refresh: 'affected' },
+    );
+    this.assertCurrentChat(chatEpoch);
+    this.chatState.markDirty();
+    const placeholderFloor = this.chatState.syncHead().currentFloor;
+    const placeholder = this.readFloor(placeholderFloor);
+    if (!this.isBlankAssistant(placeholder) || placeholderFloor <= collected.sourceThrough) {
+      throw new Error('末尾空白写入位创建失败，已停止生成');
+    }
+
+    const round: SummaryRound = {
+      id: roundId,
+      chatEpoch,
+      archiveContext: collected.archiveContext,
+      targetFlux: collected.targetFlux,
+      archiveFloors: collected.archiveFloors,
+      fluxFloors: [...new Set(collected.fluxes.map(flux => flux.floor))],
+      latestArchiveFloor: collected.latestArchiveFloor,
+      sourceThrough: collected.sourceThrough,
+      placeholderFloor,
+      sourceChars: collected.sourceChars,
+      connectionProfileId: this.config.connectionProfileId,
+      orchestration: this.summaryOrchestrationEntries().map(entry => ({ ...entry })),
+    };
+    this.assertCurrentChat(chatEpoch);
+    this.summaryRound = round;
+    this.config.summaryPlaceholderFloor = placeholderFloor;
+    this.persist();
+    return this.runSummaryGenerate(round, guidance, 'idle');
+  }
+
+  /** 首次失败/取消/超时后，用同一批冻结来源与同一个 y 重试。 */
+  async retrySummary(guidance = ''): Promise<SummaryCandidate> {
+    if (this.phase !== 'idle') throw new Error('只能在空闲状态重试普通总结');
+    const round = this.summaryRound;
+    if (!round) throw new Error('没有可重试的冻结总结来源，请新建一轮');
+    this.ensureSummaryPlaceholder(round);
+    return this.runSummaryGenerate(round, guidance, 'idle');
+  }
+
+  /** 结果页重 roll：来源/y/连接不变，只替换可空 guidance 并重跑整段。 */
+  async regenerateSummary(cand: SummaryCandidate, guidance: string): Promise<SummaryCandidate> {
+    if (this.phase !== 'preview') throw new Error('重 roll 需在预览态');
+    const round = this.summaryRound;
+    if (!round || round.id !== cand.round.id) throw new Error('普通总结来源已失效，请新建一轮');
+    this.ensureSummaryPlaceholder(round);
+    return this.runSummaryGenerate(round, guidance, 'preview');
+  }
+
+  private async runSummaryGenerate(
+    round: SummaryRound,
+    guidance: string,
+    fallbackPhase: GenerationFallbackPhase,
+  ): Promise<SummaryCandidate> {
+    this.assertCurrentChat(round.chatEpoch);
+    this.ensureSummaryPlaceholder(round);
+    const generationId = `${round.id}-${++this.generationSequence}`;
+    const op = this.beginGeneration(generationId, fallbackPhase);
+    try {
+      const raw = await Promise.race([
+        this.deps.generateRaw({
+          ordered_prompts: assembleSummaryPrompt(round.orchestration, {
+            archiveContext: round.archiveContext,
+            targetFlux: round.targetFlux,
+            guidance,
+          }),
+          generation_id: generationId,
+          connection_profile_id: round.connectionProfileId ?? undefined,
+        }),
+        op.abortPromise,
+      ]);
+      if (this.activeGeneration !== op) throw new GenerationCancelledError();
+      this.assertCurrentChat(round.chatEpoch);
+      const candidate = this.toSummaryCandidate(raw, round, guidance);
+      this.releaseGeneration(op, 'preview');
+      return candidate;
+    } catch (error) {
+      this.releaseGeneration(op, fallbackPhase);
+      throw error;
+    }
+  }
+
+  private toSummaryCandidate(raw: string, round: SummaryRound, guidance: string): SummaryCandidate {
+    const validation = validateSummaryArchive(raw);
+    return {
+      raw,
+      body: validation.block?.inner ?? '',
+      validation,
+      containers: validation.nodes,
+      sourceThrough: round.sourceThrough,
+      placeholderFloor: round.placeholderFloor,
+      guidance,
+      sourceChars: round.sourceChars,
+      round,
+    };
+  }
+
+  editSummaryCandidate(cand: SummaryCandidate, body: string): SummaryCandidate {
+    const wrapped = wrapArchive(body, 'live');
+    const oldBlock = cand.validation.block;
+    const raw = oldBlock
+      ? cand.raw.slice(0, oldBlock.span[0]) + wrapped + cand.raw.slice(oldBlock.span[1])
+      : wrapped;
+    return this.toSummaryCandidate(raw, cand.round, cand.guidance);
+  }
+
+  /** 只有 y 仍是空白 assistant 才写入；正文变化时宁可失败也绝不覆盖。 */
+  async applySummary(cand: SummaryCandidate): Promise<number> {
+    if (this.phase !== 'preview') throw new Error('应用总结需在预览态');
+    if (!cand.validation.ok) throw new Error('硬错未清，拦应用');
+    const round = this.summaryRound;
+    if (!round || round.id !== cand.round.id) throw new Error('普通总结来源已失效，请新建一轮');
+    this.assertCurrentChat(round.chatEpoch);
+    this.ensureSummaryPlaceholder(round);
+    // 单楼写回同样是不可中断的提交窗口。UI 会在 committing 期间拒绝关闭，避免
+    // 用户点“关闭/放弃”之后底层 setChatMessages 仍悄悄完成。
+    this.phase = 'committing';
+    try {
+      this.assertCurrentChat(round.chatEpoch);
+      await this.deps.setChatMessages(
+        [{ message_id: round.placeholderFloor, message: wrapArchive(cand.body, 'live') }],
+        { refresh: 'affected' },
+      );
+      this.assertCurrentChat(round.chatEpoch);
+      this.chatState.markDirty();
+      this.summaryRound = null;
+      this.config.summaryPlaceholderFloor = null;
+      this.config.summaryLastRemindedFloor = null;
+      this.assertCurrentChat(round.chatEpoch);
+      this.persist();
+      this.phase = 'idle';
+      return round.placeholderFloor;
+    } catch (error) {
+      // 写入失败时保留候选、冻结来源和 y，仍可再次应用或同批重生成。
+      this.phase = 'preview';
+      throw error;
+    }
+  }
+
+  /** 放弃候选不写 y；空白 y 由下次新建总结时安全清理。 */
+  discardSummary(): void {
+    this.phase = 'idle';
+    this.summaryRound = null;
+  }
+
+  summaryRetryAvailable(): boolean {
+    return this.phase === 'idle' && this.summaryRound !== null;
   }
 
   // ---- 生成（单次独立调用，单例锁） ---------------------------------------
@@ -391,16 +766,18 @@ export class ArchiverSession {
     selection: number[] | undefined,
     fallbackPhase: GenerationFallbackPhase,
   ): Promise<Candidate> {
-    const table = this.currentTable();
-    if (detectInterruptedCommit(table).length > 0) {
+    // 生成开始是一个新的并发边界：取一次 fresh q，并严格用这个 q 建表/收集。
+    const read = this.chatState.scanFresh();
+    const chatEpoch = read.chatEpoch;
+    if (detectInterruptedCommit(read.table).length > 0) {
       throw new Error('检测到未完成的归档提交；为避免叠加写入，已禁止开始新归档');
     }
-    if (this.integrityCheck(table).needed) {
+    if (this.integrityCheck(read.table).needed) {
       throw new Error('检测到档案完整性缺口；请先复原退役档，再开始新归档');
     }
-    const { historicalContext, sources, continuity } = this.collect(table, selection);
+    const { historicalContext, sources, continuity } = this.collect(read, selection);
     if (sources.length === 0) throw new Error('没有可归档的原始档案');
-    const provenance = this.captureProvenance(sources, continuity);
+    const provenance = this.captureProvenance(sources, continuity, chatEpoch);
     const through = sources.reduce((m, s) => Math.max(m, s.messageId), 0);
     const sourceChars = sources.reduce((s, e) => s + e.content.length, 0);
     const generationId = `mem-${through}-${++this.generationSequence}`;
@@ -417,6 +794,7 @@ export class ArchiverSession {
       ]);
       // cancel/timeout 会先摘掉 op；防御性拦住任何异常的晚返回。
       if (this.activeGeneration !== op) throw new GenerationCancelledError();
+      this.assertCurrentChat(chatEpoch);
       const cand = this.toCandidate(raw, through, guidance, selection, sourceChars, provenance);
       this.releaseGeneration(op, 'preview');
       return cand;
@@ -454,17 +832,24 @@ export class ArchiverSession {
     return { messageId: entry.messageId, raw: entry.raw, span: [entry.span[0], entry.span[1]] };
   }
 
-  private captureProvenance(sources: LocatorEntry[], continuity: LocatorEntry | null): CandidateProvenance {
+  private captureProvenance(
+    sources: LocatorEntry[],
+    continuity: LocatorEntry | null,
+    chatEpoch: number,
+  ): CandidateProvenance {
+    this.assertCurrentChat(chatEpoch);
     const entries = continuity ? [...sources, continuity] : sources;
     const floors = new Map<number, string>();
     for (const entry of entries) {
-      const message = this.deps.getChatMessages(entry.messageId)[0]?.message ?? '';
+      this.assertCurrentChat(chatEpoch);
+      const message = this.readFloorText(entry.messageId);
       if (message.slice(entry.span[0], entry.span[1]) !== entry.raw) {
         throw new Error(`层 ${entry.messageId} 的归档在生成前已变化，请刷新后重试`);
       }
       floors.set(entry.messageId, message);
     }
     return {
+      chatEpoch,
       sources: sources.map(e => this.archiveRef(e)),
       continuity: continuity ? this.archiveRef(continuity) : null,
       floors: [...floors].map(([messageId, message]) => ({ messageId, message })),
@@ -484,15 +869,16 @@ export class ArchiverSession {
     });
   }
 
-  private assertCandidateProvenance(cand: Candidate, table: LocatorEntry[]): Collected {
+  private assertCandidateProvenance(cand: Candidate, snapshot: CollectionSnapshot): Collected {
+    this.assertCurrentChat(cand.provenance.chatEpoch);
     for (const floor of cand.provenance.floors) {
-      const current = this.deps.getChatMessages(floor.messageId)[0]?.message ?? '';
+      const current = this.readFloorText(floor.messageId);
       if (current !== floor.message) {
         throw new Error(`层 ${floor.messageId} 的归档在预览期间发生变化，请重新生成`);
       }
     }
 
-    const collected = this.collect(table, cand.selection);
+    const collected = this.collect(snapshot, cand.selection);
     if (!this.sameRefs(collected.sources, cand.provenance.sources)) {
       throw new Error('归档来源集合在预览期间发生变化，请重新生成');
     }
@@ -561,7 +947,9 @@ export class ArchiverSession {
    * 楼层里 <World_Archive> 之外的内容（若有）原样保留。
    */
   async editLiveContainer(messageId: number, expectedRaw: string, index: number, newText: string): Promise<void> {
-    const floorText = this.deps.getChatMessages(messageId)[0]?.message ?? '';
+    const chatEpoch = this.chatState.currentChatEpoch();
+    this.assertCurrentChat(chatEpoch);
+    const floorText = this.readFloorText(messageId);
     const block = buildLocatorTable([{ message_id: messageId, message: floorText }]).find(e => e.generation === 'live');
     if (!block) throw new Error('该楼层没有在场档案');
     if (block.raw !== expectedRaw) throw new Error('档案在编辑期间已变化，请刷新后重试');
@@ -577,7 +965,10 @@ export class ArchiverSession {
     containers[index].container = parsed[0];
     const newInner = serializeArchiveNodes(nodes);
     const rebuilt = replaceSpanExact(floorText, block.span, block.raw, wrapArchive(newInner, 'live'));
+    this.assertCurrentChat(chatEpoch);
     await this.deps.setChatMessages([{ message_id: messageId, message: rebuilt }], { refresh: 'none' });
+    this.assertCurrentChat(chatEpoch);
+    this.chatState.markDirty();
   }
 
   // ---- 配置持久化（对话进度写 chat；用户设置另同步 global 种子） --------
@@ -602,6 +993,46 @@ export class ArchiverSession {
   setN(n: number): void {
     this.config.n = normalizeN(n);
     this.persistUserSetting();
+  }
+
+  /** 普通总结的提醒间隔；最小 20，只影响提醒。 */
+  setSummaryInterval(value: number): void {
+    this.config.summaryInterval = normalizeSummaryInterval(value);
+    this.persistUserSetting();
+  }
+
+  /** 启停「摘要 → 大总结」后台功能；关闭不影响手动进入与生成。 */
+  setSummaryEnabled(enabled: boolean): void {
+    if (this.config.summaryEnabled === enabled) return;
+    this.config.summaryEnabled = enabled;
+    this.persistUserSetting();
+    this.notifyFeatureEnablementChanged();
+  }
+
+  /** 启停「大总结时间轴化」后台功能；关闭不影响手动进入与生成。 */
+  setTimelineEnabled(enabled: boolean): void {
+    if (this.config.timelineEnabled === enabled) return;
+    this.config.timelineEnabled = enabled;
+    this.persistUserSetting();
+    this.notifyFeatureEnablementChanged();
+  }
+
+  /** 订阅两个启用开关的变化；用于运行时即时启停共享监听与动态正则。 */
+  onFeatureEnablementChanged(listener: () => void): () => void {
+    this.featureEnablementListeners.add(listener);
+    return () => {
+      this.featureEnablementListeners.delete(listener);
+    };
+  }
+
+  private notifyFeatureEnablementChanged(): void {
+    for (const listener of this.featureEnablementListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn('[记忆归档] 功能启用状态回调失败：', error);
+      }
+    }
   }
 
   /** 指派酒馆 Connection Profile（只记 ID，不碰 URL/key）；空 → null（跟随当前连接）。 */
@@ -675,6 +1106,59 @@ export class ArchiverSession {
     this.setOrchestrationOverride(id, content);
   }
 
+  /** 普通总结的固定三段式编排，叠加少量 chat override。 */
+  summaryOrchestrationEntries(): SummaryOrchestrationEntry[] {
+    return resolveSummaryOrchestration(this.config.summaryOrchestrationOverrides);
+  }
+
+  summaryOrchestrationState(id: SummaryPromptId): {
+    customized: boolean;
+    builtinUpdateAvailable: boolean;
+  } {
+    const override = this.config.summaryOrchestrationOverrides[id];
+    if (!override) return { customized: false, builtinUpdateAvailable: false };
+    const builtin = defaultSummaryOrchestration().find(entry => entry.id === id);
+    return {
+      customized: true,
+      builtinUpdateAvailable: !!builtin && override.baseHash !== summaryPromptFingerprint(builtin.content),
+    };
+  }
+
+  summaryPromptOverrideSummary(): { customized: number; updates: number } {
+    const ids = Object.keys(this.config.summaryOrchestrationOverrides) as SummaryPromptId[];
+    return {
+      customized: ids.length,
+      updates: ids.filter(id => this.summaryOrchestrationState(id).builtinUpdateAvailable).length,
+    };
+  }
+
+  setSummaryOrchestrationOverride(id: SummaryPromptId, content: string): void {
+    const builtin = defaultSummaryOrchestration().find(entry => entry.id === id);
+    if (!builtin) return;
+    if (content === builtin.content) {
+      delete this.config.summaryOrchestrationOverrides[id];
+      this.persistUserSetting();
+      return;
+    }
+    const existing = this.config.summaryOrchestrationOverrides[id];
+    this.config.summaryOrchestrationOverrides[id] = existing
+      ? { content, baseHash: existing.baseHash }
+      : makeSummaryOrchestrationOverride(content, builtin.content);
+    this.persistUserSetting();
+  }
+
+  resetSummaryOrchestrationOverride(id: SummaryPromptId): void {
+    if (!(id in this.config.summaryOrchestrationOverrides)) return;
+    delete this.config.summaryOrchestrationOverrides[id];
+    this.persistUserSetting();
+  }
+
+  resetAllSummaryOrchestrationOverrides(): void {
+    if (Object.keys(this.config.summaryOrchestrationOverrides).length === 0) return;
+    this.config.summaryOrchestrationOverrides = {};
+    this.persistUserSetting();
+  }
+
   // ---- 提交决策 + 两段提交 -------------------------------------------------
 
   /**
@@ -684,20 +1168,20 @@ export class ArchiverSession {
    *   - 覆盖标记端点 = 该层（总结到这层），打在新档内部；
    *   - 仅当候选首容器与既存末尾容器标题完全一致时，增量覆写该末尾容器。
    */
-  buildCommitDecision(cand: Candidate, table: LocatorEntry[]): CommitDecision {
-    if (detectInterruptedCommit(table).length > 0) {
+  buildCommitDecision(cand: Candidate, snapshot: CollectionSnapshot): CommitDecision {
+    if (detectInterruptedCommit(snapshot.table).length > 0) {
       throw new Error('检测到未完成的归档提交；请先恢复现场，不能继续保存');
     }
-    if (this.integrityCheck(table).needed) {
+    if (this.integrityCheck(snapshot.table).needed) {
       throw new Error('检测到档案完整性缺口；请先复原退役档，不能继续保存');
     }
-    const { sources, continuity } = this.assertCandidateProvenance(cand, table);
+    const { sources, continuity } = this.assertCandidateProvenance(cand, snapshot);
     if (sources.length === 0) throw new Error('提交失败：归档来源为空');
     const target = sources.reduce((m, s) => Math.max(m, s.messageId), 0);
     if (target !== cand.through) throw new Error('提交边界与生成时来源不一致，请重新生成');
     const retire: RetireTarget[] = sources.map(s => ({
       message_id: s.messageId,
-      message: this.deps.getChatMessages(s.messageId)[0]?.message ?? '',
+      message: this.readFloorText(s.messageId),
       blockRaw: s.raw,
       blockSpan: s.span,
     }));
@@ -712,14 +1196,14 @@ export class ArchiverSession {
     const supersede: RetireTarget | undefined = continuity && continuesLastContainer
       ? {
           message_id: continuity.messageId,
-          message: this.deps.getChatMessages(continuity.messageId)[0]?.message ?? '',
+          message: this.readFloorText(continuity.messageId),
           blockRaw: continuity.raw,
           blockSpan: continuity.span,
         }
       : undefined;
     return {
       targetMessageId: target,
-      targetMessageText: this.deps.getChatMessages(target)[0]?.message ?? '',
+      targetMessageText: this.readFloorText(target),
       pendingBody: cand.body,
       through: cand.through,
       retire,
@@ -732,8 +1216,11 @@ export class ArchiverSession {
     if (this.phase !== 'preview') throw new Error('提交需在预览态');
     if (!cand.validation.ok) throw new Error('硬错未清，拦保存');
     void table;
-    const freshTable = this.currentTable();
-    const decision = this.buildCommitDecision(cand, freshTable);
+    const chatEpoch = cand.provenance.chatEpoch;
+    this.assertCurrentChat(chatEpoch);
+    const fresh = this.chatState.scanFresh();
+    if (fresh.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+    const decision = this.buildCommitDecision(cand, fresh);
     const plan = planCommit(decision);
     let commitLog = createCommitLog({
       targetFloor: decision.targetMessageId,
@@ -742,26 +1229,33 @@ export class ArchiverSession {
       supersedeFloor: decision.supersede?.message_id,
     });
     // 在任何楼层改动之前先记下这笔计划。
+    this.assertCurrentChat(chatEpoch);
     saveCommitLog(this.deps, commitLog);
     this.phase = 'committing';
     try {
-      await executeCommit(plan, this.deps, {
+      await executeCommit(plan, this.guardedCommitDeps(chatEpoch), {
         afterStepVerified: step => {
+          this.assertCurrentChat(chatEpoch);
+          this.chatState.markDirty();
           commitLog = markCommitStepSucceeded(commitLog, step);
           saveCommitLog(this.deps, commitLog);
         },
       });
-      this.finalizeAfterCommit(decision.through);
+      this.finalizeAfterCommit(decision.through, chatEpoch);
       // 边界先落盘，再记“整笔完成”；保留最近一笔便于核对 promoted 楼层。
       commitLog = completeCommitLog(commitLog);
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, commitLog);
       this.phase = 'idle';
     } catch (err) {
-      try {
-        commitLog = markCommitLogFailed(commitLog, err);
-        saveCommitLog(this.deps, commitLog);
-      } catch {
-        // 日志二次写入失败时，不覆盖原始提交错误。
+      if (this.chatState.isCurrentChatEpoch(chatEpoch)) {
+        this.chatState.markDirty();
+        try {
+          commitLog = markCommitLogFailed(commitLog, err);
+          saveCommitLog(this.deps, commitLog);
+        } catch {
+          // 日志二次写入失败时，不覆盖原始提交错误。
+        }
       }
       this.phase = 'idle';
       throw err;
@@ -769,10 +1263,12 @@ export class ArchiverSession {
   }
 
   /** 提交成功收尾：推进 boundary、重置基线与提醒。commit 与 resumeCommit 共用。 */
-  private finalizeAfterCommit(through: number): void {
+  private finalizeAfterCommit(through: number, chatEpoch: number): void {
+    this.assertCurrentChat(chatEpoch);
     this.config.boundary = through;
-    this.config.lastKnownFloor = this.lastFloor;
+    this.config.lastKnownFloor = this.chatState.syncHead().currentFloor;
     this.config.lastDismissedFloor = null;
+    this.assertCurrentChat(chatEpoch);
     this.persist();
   }
 
@@ -790,18 +1286,23 @@ export class ArchiverSession {
    */
   async resumeCommit(): Promise<{ resumed: boolean; steps: number }> {
     if (this.phase !== 'idle') throw new Error('单例锁：请先结束当前归档，再继续未完成的提交');
+    const chatEpoch = this.chatState.currentChatEpoch();
+    this.assertCurrentChat(chatEpoch);
     const loaded = loadCommitLog(this.deps);
     if (!loaded) throw new Error('没有找到未完成的提交记录');
     if (loaded.status === 'completed') throw new Error('该提交已完成，无需继续');
     let log: CommitLog = loaded;
 
     const target = log.targetFloor;
-    const table = this.currentTable();
+    const read = this.chatState.scanFresh();
+    if (read.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+    const table = read.table;
     const pending = table.find(e => e.messageId === target && e.generation === 'pending') ?? null;
 
     // 现场已无 pending：要么尚未起步（清日志），要么已转正（据现场收尾）。
     if (!pending) {
       if (!log.pendingWritten) {
+        this.assertCurrentChat(chatEpoch);
         clearCommitLog(this.deps);
         return { resumed: false, steps: 0 };
       }
@@ -811,9 +1312,10 @@ export class ArchiverSession {
       if (!promoted) {
         throw new Error('现场既无 pending 也无对应在场新档，无法自动继续，请人工核对档案');
       }
-      log = this.reconcileCompleted(log, table, null);
-      this.finalizeAfterCommit(log.through);
+      log = this.reconcileCompleted(log, table, null, chatEpoch);
+      this.finalizeAfterCommit(log.through, chatEpoch);
       log = completeCommitLog(log);
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, log);
       return { resumed: true, steps: 0 };
     }
@@ -821,6 +1323,7 @@ export class ArchiverSession {
     // 现场有 pending：pending 一定已写过（现场即真相）。
     if (!log.pendingWritten) {
       log = this.markStep(log, 'write-pending', target);
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, log);
     }
     const pendingFirst = parseArchiveBody(pending.content).find(c => c.kind === 'container') ?? null;
@@ -828,25 +1331,32 @@ export class ArchiverSession {
 
     this.phase = 'committing';
     try {
-      await executeCommit(plan, this.deps, {
+      await executeCommit(plan, this.guardedCommitDeps(chatEpoch), {
         afterStepVerified: step => {
+          this.assertCurrentChat(chatEpoch);
+          this.chatState.markDirty();
           log = markCommitStepSucceeded(log, step);
           saveCommitLog(this.deps, log);
         },
       });
-      const done = this.currentTable();
-      log = this.reconcileCompleted(log, done, pendingFirst);
-      this.finalizeAfterCommit(log.through);
+      const doneRead = this.chatState.scanFresh();
+      if (doneRead.chatEpoch !== chatEpoch) throw new ChatChangedDuringOperationError();
+      log = this.reconcileCompleted(log, doneRead.table, pendingFirst, chatEpoch);
+      this.finalizeAfterCommit(log.through, chatEpoch);
       log = completeCommitLog(log);
+      this.assertCurrentChat(chatEpoch);
       saveCommitLog(this.deps, log);
       this.phase = 'idle';
       return { resumed: true, steps: plan.length };
     } catch (err) {
-      try {
-        log = markCommitLogFailed(log, err);
-        saveCommitLog(this.deps, log);
-      } catch {
-        // 二次写日志失败时不覆盖原始提交错误。
+      if (this.chatState.isCurrentChatEpoch(chatEpoch)) {
+        this.chatState.markDirty();
+        try {
+          log = markCommitLogFailed(log, err);
+          saveCommitLog(this.deps, log);
+        } catch {
+          // 二次写日志失败时不覆盖原始提交错误。
+        }
       }
       this.phase = 'idle';
       throw err;
@@ -859,7 +1369,7 @@ export class ArchiverSession {
     const steps: CommitStep[] = [];
     const work = new Map<number, string>();
     const floorText = (id: number): string => {
-      if (!work.has(id)) work.set(id, this.deps.getChatMessages(id)[0]?.message ?? '');
+      if (!work.has(id)) work.set(id, this.readFloorText(id));
       return work.get(id)!;
     };
 
@@ -937,7 +1447,13 @@ export class ArchiverSession {
    * 续跑后据现场把「因幂等而跳过的步骤」补记进日志，并校验整笔确实完成。
    * 任一计划变更在现场仍未落地即抛错——绝不把半截态记成 completed。
    */
-  private reconcileCompleted(log: CommitLog, table: LocatorEntry[], pendingFirst: Container | null): CommitLog {
+  private reconcileCompleted(
+    log: CommitLog,
+    table: LocatorEntry[],
+    pendingFirst: Container | null,
+    chatEpoch: number,
+  ): CommitLog {
+    this.assertCurrentChat(chatEpoch);
     let next = log;
     if (!next.pendingWritten) next = this.markStep(next, 'write-pending', next.targetFloor);
 
@@ -969,6 +1485,7 @@ export class ArchiverSession {
       next = this.markStep(next, 'promote-live', next.targetFloor);
     }
 
+    this.assertCurrentChat(chatEpoch);
     saveCommitLog(this.deps, next);
     return next;
   }
@@ -987,8 +1504,13 @@ export class ArchiverSession {
 
   /** 仅移除 pending；只有确认事务尚未退役/覆写任何旧档时才可把它当完整回滚。 */
   async rollbackPending(entry: LocatorEntry): Promise<void> {
-    const text = this.deps.getChatMessages(entry.messageId)[0]?.message ?? '';
+    const chatEpoch = this.chatState.currentChatEpoch();
+    this.assertCurrentChat(chatEpoch);
+    const text = this.readFloorText(entry.messageId);
     const restored = planRollbackPending(text, entry.raw, entry.span);
+    this.assertCurrentChat(chatEpoch);
     await this.deps.setChatMessages([{ message_id: entry.messageId, message: restored }], { refresh: 'none' });
+    this.assertCurrentChat(chatEpoch);
+    this.chatState.markDirty();
   }
 }

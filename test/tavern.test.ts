@@ -14,6 +14,66 @@ function mockGlobal(t: TestContext, key: string, value: unknown): void {
   });
 }
 
+test('聊天消息适配：保留 role 与可选元数据，并原样转发创建/删除选项', async t => {
+  const created: Array<{ messages: unknown; option: unknown }> = [];
+  const deleted: Array<{ ids: unknown; option: unknown }> = [];
+  mockGlobal(t, 'getChatMessages', (range: string | number) => {
+    assert.equal(range, 7);
+    return [
+      {
+        message_id: 7,
+        name: 'Assistant',
+        role: 'assistant',
+        is_hidden: false,
+        message: '',
+        data: { placeholder: true },
+        extra: { type: 'normal' },
+        swipe_id: 0,
+        swipes: [''],
+        swipes_data: [{ placeholder: true }],
+        swipes_info: [{ type: 'normal' }],
+      },
+    ];
+  });
+  mockGlobal(t, 'createChatMessages', async (messages: unknown, option: unknown) => {
+    created.push({ messages, option });
+  });
+  mockGlobal(t, 'deleteChatMessages', async (ids: unknown, option: unknown) => {
+    deleted.push({ ids, option });
+  });
+
+  const deps = createTavernDeps();
+  assert.deepEqual(deps.getChatMessages(7), [
+    {
+      message_id: 7,
+      name: 'Assistant',
+      role: 'assistant',
+      is_hidden: false,
+      message: '',
+      data: { placeholder: true },
+      extra: { type: 'normal' },
+      swipe_id: 0,
+      swipes: [''],
+      swipes_data: [{ placeholder: true }],
+      swipes_info: [{ type: 'normal' }],
+    },
+  ]);
+
+  await deps.createChatMessages([{ role: 'assistant', message: '' }], {
+    insert_before: 'end',
+    refresh: 'none',
+  });
+  await deps.deleteChatMessages([7, -1], { refresh: 'affected' });
+
+  assert.deepEqual(created, [
+    {
+      messages: [{ role: 'assistant', message: '' }],
+      option: { insert_before: 'end', refresh: 'none' },
+    },
+  ]);
+  assert.deepEqual(deleted, [{ ids: [7, -1], option: { refresh: 'affected' } }]);
+});
+
 test('Connection Profiles：只向 UI 暴露安全摘要，并用 profile 服务独立生成', async t => {
   let nativeCalls = 0;
   let request:
@@ -21,6 +81,9 @@ test('Connection Profiles：只向 UI 暴露安全摘要，并用 profile 服务
         profileId: string;
         maxTokens: number;
         signal: AbortSignal;
+        prompts: unknown;
+        includePreset: boolean;
+        includeInstruct: boolean;
       }
     | undefined;
   const fullProfile = {
@@ -39,11 +102,18 @@ test('Connection Profiles：只向 UI 暴露安全摘要，并用 profile 服务
       getProfile: () => fullProfile,
       sendRequest: async (
         profileId: string,
-        _prompts: unknown,
+        prompts: unknown,
         maxTokens: number,
-        options: { signal: AbortSignal },
+        options: { signal: AbortSignal; includePreset: boolean; includeInstruct: boolean },
       ) => {
-        request = { profileId, maxTokens, signal: options.signal };
+        request = {
+          profileId,
+          maxTokens,
+          signal: options.signal,
+          prompts,
+          includePreset: options.includePreset,
+          includeInstruct: options.includeInstruct,
+        };
         return { content: '连接配置生成结果' };
       },
     },
@@ -71,6 +141,9 @@ test('Connection Profiles：只向 UI 暴露安全摘要，并用 profile 服务
   assert.equal(request?.profileId, 'profile-1');
   assert.equal(request?.maxTokens, 12000);
   assert.equal(request?.signal.aborted, false);
+  assert.deepEqual(request?.prompts, [{ role: 'system', content: '归档' }]);
+  assert.equal(request?.includePreset, true, '只复用 Profile 的生成参数，不代表注入提示词预设正文');
+  assert.equal(request?.includeInstruct, true, '只在 Text Completion 下套 instruct 格式');
 });
 
 test('未选择 Connection Profile：仍走 generateRaw，内部字段不会透传', async t => {

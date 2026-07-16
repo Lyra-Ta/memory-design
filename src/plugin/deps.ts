@@ -37,10 +37,47 @@ export interface GenerateRawArgs {
 /** 变量作用域（本插件只用 chat 存配置、global 存种子） */
 export type VarScope = { type: 'chat' | 'global' } | { type: 'script'; script_id?: string };
 
-/** 一层楼的最小形状 */
+/** 聊天消息写操作共用的页面刷新口径。 */
+export interface ChatMessagesRefreshOption {
+  refresh?: 'none' | 'affected' | 'all';
+}
+
+/**
+ * 一层楼的读取形状。
+ *
+ * 楼层定位只强依赖 message_id / message；其余字段对旧 mock 与旧版酒馆
+ * 保持可选，但真实适配层会尽量保留 JS-Slash-Runner 返回的消息身份与数据。
+ */
 export interface TavernMessage {
-  message_id: number;
+  readonly message_id: number;
+  readonly message: string;
+  readonly name?: string;
+  readonly role?: PromptRole;
+  readonly is_hidden?: boolean;
+  readonly data?: Readonly<Record<string, unknown>>;
+  readonly extra?: Readonly<Record<string, unknown>>;
+  /** getChatMessages(include_swipes=false) 在当前运行时也会带回的兼容字段。 */
+  readonly swipe_id?: number;
+  readonly swipes?: readonly string[];
+  readonly swipes_data?: readonly Readonly<Record<string, unknown>>[];
+  readonly swipes_info?: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** createChatMessages 的单条新消息形状。 */
+export interface TavernMessageCreating {
+  name?: string;
+  role: PromptRole;
+  is_hidden?: boolean;
   message: string;
+  data?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
+}
+
+/** JS-Slash-Runner createChatMessages 的真实选项子集。 */
+export interface CreateChatMessagesOption extends ChatMessagesRefreshOption {
+  /** @deprecated 真接口仍兼容；新调用应使用 insert_before。 */
+  insert_at?: number | 'end';
+  insert_before?: number | 'end';
 }
 
 /**
@@ -53,8 +90,15 @@ export interface ArchiverTavernDeps {
   /** 写/改楼层（两段提交、手改覆盖），落盘 */
   setChatMessages(
     messages: Array<{ message_id: number; message: string }>,
-    option?: { refresh?: 'none' | 'affected' | 'all' },
+    option?: ChatMessagesRefreshOption,
   ): Promise<void>;
+  /** 在指定位置（默认末尾）创建新楼层。 */
+  createChatMessages(
+    messages: TavernMessageCreating[],
+    option?: CreateChatMessagesOption,
+  ): Promise<void>;
+  /** 按楼层号删除消息。负数楼层的解析交由 JS-Slash-Runner。 */
+  deleteChatMessages(messageIds: number[], option?: ChatMessagesRefreshOption): Promise<void>;
   /** 当前最高楼层号 */
   getLastMessageId(): number;
   /** 单次独立调用生成候选档 */

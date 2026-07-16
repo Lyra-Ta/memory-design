@@ -6,6 +6,10 @@
  */
 
 import { DEFAULT_N, normalizeN } from '../core/trigger';
+import {
+  DEFAULT_SUMMARY_INTERVAL,
+  normalizeSummaryInterval,
+} from '../core/summary-trigger';
 import type { ArchiverTavernDeps } from './deps';
 import {
   defaultOrchestration,
@@ -13,11 +17,16 @@ import {
   type OrchestrationEntry,
   type OrchestrationOverrides,
 } from './orchestration';
+import {
+  defaultSummaryOrchestration,
+  type SummaryPromptId,
+  type SummaryOrchestrationOverrides,
+} from './summary-orchestration';
 
 /** 存进变量表用的命名空间键 */
 export const CONFIG_KEY = 'memoryArchiver';
-/** v5：不再把整份内置提示词复制进变量，只持久化 override。 */
-export const CONFIG_VERSION = 5;
+/** v7：增加两个独立功能启用开关；旧配置迁移时均默认开启。 */
+export const CONFIG_VERSION = 7;
 
 /**
  * v2-v4 已发布内置提示词的冻结指纹。
@@ -48,6 +57,18 @@ export interface ArchiverConfig {
   modelHint: string;
   /** 仅保存真正自定义过的提示词模块；其余模块运行时读取当前脚本内置版。 */
   orchestrationOverrides: OrchestrationOverrides;
+  /** Flux 积累多少层后提醒做一次普通总结（只提醒，不拦手动）。 */
+  summaryInterval: number;
+  /** 当前记录的空白 assistant 写入位 y；只有仍空白时才能删/写。 */
+  summaryPlaceholderFloor: number | null;
+  /** 上次播出「摘要 → 总结」轻提醒时的 q。 */
+  summaryLastRemindedFloor: number | null;
+  /** 摘要 → 总结三段式提示词的用户 override。 */
+  summaryOrchestrationOverrides: SummaryOrchestrationOverrides;
+  /** 是否启用「大总结时间轴化」的后台监听与自动提醒。手动入口始终保留。 */
+  timelineEnabled: boolean;
+  /** 是否启用「摘要 → 大总结」的后台监听与自动提醒。手动入口始终保留。 */
+  summaryEnabled: boolean;
 }
 
 export function defaultConfig(): ArchiverConfig {
@@ -60,6 +81,12 @@ export function defaultConfig(): ArchiverConfig {
     connectionProfileId: null,
     modelHint: '任务较复杂，推荐 Gemini 等智商尚可的模型就够。',
     orchestrationOverrides: {},
+    summaryInterval: DEFAULT_SUMMARY_INTERVAL,
+    summaryPlaceholderFloor: null,
+    summaryLastRemindedFloor: null,
+    summaryOrchestrationOverrides: {},
+    timelineEnabled: true,
+    summaryEnabled: true,
   };
 }
 
@@ -75,6 +102,18 @@ function coerceOverrides(raw: unknown): OrchestrationOverrides {
     if (!knownIds.has(id)) continue;
     if (!isRecord(value) || typeof value.content !== 'string' || typeof value.baseHash !== 'string') continue;
     overrides[id] = { content: value.content, baseHash: value.baseHash };
+  }
+  return overrides;
+}
+
+function coerceSummaryOverrides(raw: unknown): SummaryOrchestrationOverrides {
+  if (!isRecord(raw)) return {};
+  const overrides: SummaryOrchestrationOverrides = {};
+  const knownIds = new Set<SummaryPromptId>(defaultSummaryOrchestration().map(entry => entry.id));
+  for (const [id, value] of Object.entries(raw)) {
+    if (!knownIds.has(id as SummaryPromptId)) continue;
+    if (!isRecord(value) || typeof value.content !== 'string' || typeof value.baseHash !== 'string') continue;
+    overrides[id as SummaryPromptId] = { content: value.content, baseHash: value.baseHash };
   }
   return overrides;
 }
@@ -140,6 +179,18 @@ function coerce(raw: unknown): ArchiverConfig {
     connectionProfileId: typeof raw.connectionProfileId === 'string' ? raw.connectionProfileId : null,
     modelHint: typeof raw.modelHint === 'string' ? raw.modelHint : d.modelHint,
     orchestrationOverrides: { ...migrated, ...explicit },
+    summaryInterval: normalizeSummaryInterval(raw.summaryInterval),
+    summaryPlaceholderFloor:
+      typeof raw.summaryPlaceholderFloor === 'number' && Number.isInteger(raw.summaryPlaceholderFloor)
+        ? raw.summaryPlaceholderFloor
+        : null,
+    summaryLastRemindedFloor:
+      typeof raw.summaryLastRemindedFloor === 'number' && Number.isInteger(raw.summaryLastRemindedFloor)
+        ? raw.summaryLastRemindedFloor
+        : null,
+    summaryOrchestrationOverrides: coerceSummaryOverrides(raw.summaryOrchestrationOverrides),
+    timelineEnabled: typeof raw.timelineEnabled === 'boolean' ? raw.timelineEnabled : d.timelineEnabled,
+    summaryEnabled: typeof raw.summaryEnabled === 'boolean' ? raw.summaryEnabled : d.summaryEnabled,
   };
 }
 
@@ -153,6 +204,9 @@ function asGlobalSeed(cfg: ArchiverConfig): ArchiverConfig {
     lastKnownFloor: null,
     lastDismissedFloor: null,
     orchestrationOverrides: { ...cfg.orchestrationOverrides },
+    summaryPlaceholderFloor: null,
+    summaryLastRemindedFloor: null,
+    summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides },
   };
 }
 
@@ -161,7 +215,7 @@ export function loadConfig(deps: ConfigDeps): ArchiverConfig {
   const chat = deps.getVariables({ type: 'chat' })[CONFIG_KEY];
   if (chat !== undefined) {
     const cfg = coerce(chat);
-    // 无论从哪一版读入，都按 v5 精简形状写回，确保旧 orchestration 全文从 chat 消失。
+    // 无论从哪一版读入，都按当前精简形状写回，确保旧 orchestration 全文从 chat 消失。
     saveConfig(deps, cfg);
     return cfg;
   }
@@ -176,7 +230,13 @@ export function loadConfig(deps: ConfigDeps): ArchiverConfig {
 /** 存配置到 chat；ArchiverConfig 本身已不含内置提示词全文。 */
 export function saveConfig(deps: ConfigDeps, cfg: ArchiverConfig): void {
   deps.insertOrAssignVariables(
-    { [CONFIG_KEY]: { ...cfg, orchestrationOverrides: { ...cfg.orchestrationOverrides } } },
+    {
+      [CONFIG_KEY]: {
+        ...cfg,
+        orchestrationOverrides: { ...cfg.orchestrationOverrides },
+        summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides },
+      },
+    },
     { type: 'chat' },
   );
 }
