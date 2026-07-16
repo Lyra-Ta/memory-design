@@ -25,8 +25,13 @@ import {
 
 /** 存进变量表用的命名空间键 */
 export const CONFIG_KEY = 'memoryArchiver';
-/** v7：增加两个独立功能启用开关；旧配置迁移时均默认开启。 */
-export const CONFIG_VERSION = 7;
+/** v8：摘要大总结与时间轴化分别保存自己的 Connection Profile ID。 */
+export const CONFIG_VERSION = 8;
+
+export const DEFAULT_MODEL_HINT = '任务较复杂，推荐 Gemini 3.1pro等智商尚可的模型。';
+const LEGACY_DEFAULT_MODEL_HINTS = new Set([
+  '任务较复杂，推荐 Gemini 等智商尚可的模型就够。',
+]);
 
 /**
  * v2-v4 已发布内置提示词的冻结指纹。
@@ -51,8 +56,10 @@ export interface ArchiverConfig {
   lastKnownFloor: number | null;
   /** 上次「暂不」所处的层（+50 静默窗判定）；null=没暂不过 */
   lastDismissedFloor: number | null;
-  /** 选中的酒馆 Connection Profile ID（只记稳定 ID、不碰 URL/key）；null=用当前酒馆连接 */
-  connectionProfileId: string | null;
+  /** 大总结时间轴化使用的 Connection Profile ID；null=跟随当前酒馆连接。 */
+  timelineConnectionProfileId: string | null;
+  /** 摘要 → 大总结使用的 Connection Profile ID；null=跟随当前酒馆连接。 */
+  summaryConnectionProfileId: string | null;
   /** API 页那句「建议模型」提示文案 */
   modelHint: string;
   /** 仅保存真正自定义过的提示词模块；其余模块运行时读取当前脚本内置版。 */
@@ -61,9 +68,9 @@ export interface ArchiverConfig {
   summaryInterval: number;
   /** 当前记录的空白 assistant 写入位 y；只有仍空白时才能删/写。 */
   summaryPlaceholderFloor: number | null;
-  /** 上次播出「摘要 → 总结」轻提醒时的 q。 */
+  /** 上次播出「摘要 → 大总结」轻提醒时的 q。 */
   summaryLastRemindedFloor: number | null;
-  /** 摘要 → 总结三段式提示词的用户 override。 */
+  /** 摘要 → 大总结三段式提示词的用户 override。 */
   summaryOrchestrationOverrides: SummaryOrchestrationOverrides;
   /** 是否启用「大总结时间轴化」的后台监听与自动提醒。手动入口始终保留。 */
   timelineEnabled: boolean;
@@ -78,8 +85,9 @@ export function defaultConfig(): ArchiverConfig {
     boundary: 0,
     lastKnownFloor: null,
     lastDismissedFloor: null,
-    connectionProfileId: null,
-    modelHint: '任务较复杂，推荐 Gemini 等智商尚可的模型就够。',
+    timelineConnectionProfileId: null,
+    summaryConnectionProfileId: null,
+    modelHint: DEFAULT_MODEL_HINT,
     orchestrationOverrides: {},
     summaryInterval: DEFAULT_SUMMARY_INTERVAL,
     summaryPlaceholderFloor: null,
@@ -116,6 +124,11 @@ function coerceSummaryOverrides(raw: unknown): SummaryOrchestrationOverrides {
     overrides[id as SummaryPromptId] = { content: value.content, baseHash: value.baseHash };
   }
   return overrides;
+}
+
+function coerceModelHint(raw: unknown): string {
+  if (typeof raw !== 'string' || LEGACY_DEFAULT_MODEL_HINTS.has(raw)) return DEFAULT_MODEL_HINT;
+  return raw;
 }
 
 function legacyEntries(raw: unknown): OrchestrationEntry[] {
@@ -176,8 +189,15 @@ function coerce(raw: unknown): ArchiverConfig {
     boundary: typeof raw.boundary === 'number' ? raw.boundary : d.boundary,
     lastKnownFloor: typeof raw.lastKnownFloor === 'number' ? raw.lastKnownFloor : null,
     lastDismissedFloor: typeof raw.lastDismissedFloor === 'number' ? raw.lastDismissedFloor : null,
-    connectionProfileId: typeof raw.connectionProfileId === 'string' ? raw.connectionProfileId : null,
-    modelHint: typeof raw.modelHint === 'string' ? raw.modelHint : d.modelHint,
+    timelineConnectionProfileId:
+      typeof raw.timelineConnectionProfileId === 'string'
+        ? raw.timelineConnectionProfileId
+        : typeof raw.connectionProfileId === 'string'
+          ? raw.connectionProfileId
+          : null,
+    summaryConnectionProfileId:
+      typeof raw.summaryConnectionProfileId === 'string' ? raw.summaryConnectionProfileId : null,
+    modelHint: coerceModelHint(raw.modelHint),
     orchestrationOverrides: { ...migrated, ...explicit },
     summaryInterval: normalizeSummaryInterval(raw.summaryInterval),
     summaryPlaceholderFloor:

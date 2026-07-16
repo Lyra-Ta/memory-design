@@ -216,7 +216,7 @@ export interface CandidateProvenance {
   floors: CandidateFloorSnapshot[];
 }
 
-/** 一次摘要 → 总结的冻结输入。重试/重 roll 不重扫聊天，只复用它。 */
+/** 一次摘要 → 大总结的冻结输入。重试/重 roll 不重扫聊天，只复用它。 */
 export interface SummaryRound {
   id: string;
   /** 本轮创建时的聊天世代；即使拿不到 chat ID，也能拦跨聊天写入。 */
@@ -568,7 +568,7 @@ export class ArchiverSession {
       sourceThrough: collected.sourceThrough,
       placeholderFloor,
       sourceChars: collected.sourceChars,
-      connectionProfileId: this.config.connectionProfileId,
+      connectionProfileId: this.config.summaryConnectionProfileId,
       orchestration: this.summaryOrchestrationEntries().map(entry => ({ ...entry })),
     };
     this.assertCurrentChat(chatEpoch);
@@ -789,7 +789,7 @@ export class ArchiverSession {
         this.deps.generateRaw({
           ordered_prompts: prompts,
           generation_id: generationId,
-          connection_profile_id: this.config.connectionProfileId ?? undefined,
+          connection_profile_id: this.config.timelineConnectionProfileId ?? undefined,
         }),
         op.abortPromise,
       ]);
@@ -1036,9 +1036,15 @@ export class ArchiverSession {
     }
   }
 
-  /** 指派酒馆 Connection Profile（只记 ID，不碰 URL/key）；空 → null（跟随当前连接）。 */
-  setConnectionProfile(id: string | null): void {
-    this.config.connectionProfileId = id && id.trim() ? id : null;
+  /** 指派大总结时间轴化的 Connection Profile；空 → null（跟随当前连接）。 */
+  setTimelineConnectionProfile(id: string | null): void {
+    this.config.timelineConnectionProfileId = id?.trim() || null;
+    this.persistUserSetting();
+  }
+
+  /** 指派摘要 → 大总结的 Connection Profile；空 → null（跟随当前连接）。 */
+  setSummaryConnectionProfile(id: string | null): void {
+    this.config.summaryConnectionProfileId = id?.trim() || null;
     this.persistUserSetting();
   }
 

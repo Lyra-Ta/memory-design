@@ -35,12 +35,12 @@ import 'https://cdn.jsdelivr.net/gh/Lyra-Ta/memory-design@main/dist/index.js';
 | `src/plugin/chat-events.ts` | 聊天事件观察器：sent/received 合并读 q，delete/update/swipe 合并扫描，切聊天同步失效旧状态及统一解绑 | 两套总结共用基础层 |
 | `src/plugin/regex-window.ts` | 只由同一快照的 q / x 计算正则深度分区；十层分桶且保证不裁掉未总结 Flux | 《摘要转总结_触发与占位》§8.1 |
 | `src/plugin/regex-controller.ts` | 把 W 串行同步到此间小镇当前预设的两条固定 UUID 正则；同桶不重复写，只改 depth、不改 enabled | 《摘要转总结_触发与占位》§8.1 |
-| `src/plugin/config.ts` | 配置模型 + chat 作用域持久化 + 全局默认种子；提示词只存用户 override，不复制内置全文 | 功能规格 §6 配置种子 |
+| `src/plugin/config.ts` | 配置模型 + chat 作用域持久化 + 全局默认种子；两个总结任务分别保存 Connection Profile ID；提示词只存用户 override | 功能规格 §6 配置种子 |
 | `src/plugin/orchestration.ts` | §4 编排表模型 + 内置/override 解析 + `assemblePrompt`→ordered_prompts | 功能规格 §4 |
-| `src/plugin/summary-orchestration.ts` | 摘要→总结的固定 system/user/system 三段式提示词、override 与运行时填槽 | 《摘要转总结_触发与占位》§4.2 |
-| `src/plugin/session.ts` | 两套总结共用的单例引擎：时间轴化两段提交＋摘要→总结的全部完整 `<World_Archive>`/x 后 Flux 冻结、空白 y、同批重试与安全写回；共用取消/5 分钟超时 | 功能规格 §1；摘要转总结文档 |
+| `src/plugin/summary-orchestration.ts` | 摘要→大总结的固定 system/user/system 三段式提示词、统一 `<Historical_Context>`、override 与兼容填槽 | 《摘要转总结_触发与占位》§4.2 |
+| `src/plugin/session.ts` | 两套总结共用的单例引擎：时间轴化两段提交＋摘要→大总结的全部完整 `<World_Archive>`/x 后 Flux 冻结、空白 y、同批重试与安全写回；两任务各自冻结自己的连接配置 | 功能规格 §1；摘要转总结文档 |
 | `src/plugin/tavern.ts` + `tavern-globals.d.ts` | `createTavernDeps`：把酒馆助手运行时全局包成 `TavernDeps`（唯一碰全局处） | — |
-| `src/plugin/ui.ts` | 原生 Shadow DOM 面板：hub、时间轴、两套总结的设置/生成/重试/结果页、结构化编辑、API、完整性回退与提交事务日志 | 视觉稿 + 摘要转总结文档 |
+| `src/plugin/ui.ts` | 原生 Shadow DOM 面板：hub、时间轴、两套总结的设置/生成/重试/结果页、结构化编辑、双任务独立 API 配置、完整性回退与提交事务日志 | 视觉稿 + 摘要转总结文档 |
 | `src/plugin/index.ts` + `reminder.ts` | 脚本入口：注册按钮、共享 q/x 聊天事件、时间轴 2N/+50 与普通总结 S 轻提醒、切聊天重载、`pagehide` 清理 | 两套总结共用入口 |
 
 ## 承重支点（落地时别改坏）
@@ -53,6 +53,7 @@ import 'https://cdn.jsdelivr.net/gh/Lyra-Ta/memory-design@main/dist/index.js';
 - **q 与表必须同快照**：全插件只由 `ChatStateReader.syncHead` 读 q；热快照同时携带缓存 x 与由 q/x 算出的正则窗口；`collect` 只消费已传入的 `{table,currentFloor}`，不能把 A 时刻的表与 B 时刻的 q 混用。完整表不按 q 缓存，因为 q 不变时正文仍可编辑；正文一旦 dirty，扫描完成前先把 x 当未知并保守扩窗，绝不用可能失效的旧 x 裁 Flux。
 - **真切聊天立即作废旧操作**：共享读取层另维护只在真正切聊天时递增的 `chatEpoch`。两套候选、普通总结轮次与两段提交冻结该世代；每次异步写入及提交步骤前后复核，切换发生后立即停下，绝不把旧候选继续写进新聊天。
 - **普通总结的来源与写位分离**：生成前直接扫描存储原文，运行时给模型「所有完整 `<World_Archive>` ＋ x 后截至 sourceThrough 的完整 Flux」；两者都是只读输入，角色卡、世界书和日常聊天不作事实源。候选只在 y 仍是空白 assistant 时写入，失败/取消/超时/重 roll 保持同一批来源、y、连接与提示词版本，只允许更改 Guidance。
+- **两个任务的 API 配置互不串线**：摘要→大总结与大总结时间轴化分别保存、读取并冻结自己的 Connection Profile ID；旧版单一选择迁给时间轴化，摘要任务升级后默认跟随当前酒馆连接。只保存稳定 ID，地址、密钥与代理密码继续由酒馆内部管理。
 
 ## 发放（dispatch）模型 — 2026-07-11 已澄清
 
@@ -70,7 +71,7 @@ import 'https://cdn.jsdelivr.net/gh/Lyra-Ta/memory-design@main/dist/index.js';
 ## 仍待细化
 
 - **触发口径**：已按更晚定稿的 2N 实现（触发只管"何时提醒"；范围上界 当前层−N 在 `collect` 里生效）。
-- **压缩 2（摘要 / Flux→普通 Archive）**：核心、提示词、占位写回、结果界面、轻提醒与固定 UUID 正则深度控制已实现，见 [`摘要转总结_触发与占位`](../设计文档/摘要转总结_触发与占位.md)。仍待真实长聊天调优；正文→摘要继续由预设负责。
+- **压缩 2（摘要 / Flux→普通 Archive）**：核心、提示词、占位写回、结果界面、轻提醒与固定 UUID 正则深度控制已实现，见 [`摘要转总结_触发与占位`](../设计文档/摘要转总结_触发与占位.md)。仍待真实长聊天验收；正文→摘要继续由预设负责。
 
 ## 跑测试
 

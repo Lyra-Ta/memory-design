@@ -377,7 +377,11 @@ ${guidanceBlock}`;
 
   // src/plugin/config.ts
   var CONFIG_KEY = "memoryArchiver";
-  var CONFIG_VERSION = 7;
+  var CONFIG_VERSION = 8;
+  var DEFAULT_MODEL_HINT = "任务较复杂，推荐 Gemini 3.1pro等智商尚可的模型。";
+  var LEGACY_DEFAULT_MODEL_HINTS = /* @__PURE__ */ new Set([
+    "任务较复杂，推荐 Gemini 等智商尚可的模型就够。"
+  ]);
   var LEGACY_DEFAULT_PROMPT_HASHES = {
     skeleton: ["fnv1a:2088:eeafee11"],
     historical_context: ["fnv1a:75:492c7d5d"],
@@ -392,8 +396,9 @@ ${guidanceBlock}`;
       boundary: 0,
       lastKnownFloor: null,
       lastDismissedFloor: null,
-      connectionProfileId: null,
-      modelHint: "任务较复杂，推荐 Gemini 等智商尚可的模型就够。",
+      timelineConnectionProfileId: null,
+      summaryConnectionProfileId: null,
+      modelHint: DEFAULT_MODEL_HINT,
       orchestrationOverrides: {},
       summaryInterval: DEFAULT_SUMMARY_INTERVAL,
       summaryPlaceholderFloor: null,
@@ -427,6 +432,10 @@ ${guidanceBlock}`;
       overrides[id] = { content: value.content, baseHash: value.baseHash };
     }
     return overrides;
+  }
+  function coerceModelHint(raw) {
+    if (typeof raw !== "string" || LEGACY_DEFAULT_MODEL_HINTS.has(raw)) return DEFAULT_MODEL_HINT;
+    return raw;
   }
   function legacyEntries(raw) {
     if (!Array.isArray(raw)) return [];
@@ -473,8 +482,9 @@ ${guidanceBlock}`;
       boundary: typeof raw.boundary === "number" ? raw.boundary : d.boundary,
       lastKnownFloor: typeof raw.lastKnownFloor === "number" ? raw.lastKnownFloor : null,
       lastDismissedFloor: typeof raw.lastDismissedFloor === "number" ? raw.lastDismissedFloor : null,
-      connectionProfileId: typeof raw.connectionProfileId === "string" ? raw.connectionProfileId : null,
-      modelHint: typeof raw.modelHint === "string" ? raw.modelHint : d.modelHint,
+      timelineConnectionProfileId: typeof raw.timelineConnectionProfileId === "string" ? raw.timelineConnectionProfileId : typeof raw.connectionProfileId === "string" ? raw.connectionProfileId : null,
+      summaryConnectionProfileId: typeof raw.summaryConnectionProfileId === "string" ? raw.summaryConnectionProfileId : null,
+      modelHint: coerceModelHint(raw.modelHint),
       orchestrationOverrides: { ...migrated, ...explicit },
       summaryInterval: normalizeSummaryInterval(raw.summaryInterval),
       summaryPlaceholderFloor: typeof raw.summaryPlaceholderFloor === "number" && Number.isInteger(raw.summaryPlaceholderFloor) ? raw.summaryPlaceholderFloor : null,
@@ -2036,7 +2046,7 @@ ${flux.raw}`).join("\n\n");
         sourceThrough: collected.sourceThrough,
         placeholderFloor,
         sourceChars: collected.sourceChars,
-        connectionProfileId: this.config.connectionProfileId,
+        connectionProfileId: this.config.summaryConnectionProfileId,
         orchestration: this.summaryOrchestrationEntries().map((entry) => ({ ...entry }))
       };
       this.assertCurrentChat(chatEpoch);
@@ -2224,7 +2234,7 @@ ${flux.raw}`).join("\n\n");
           this.deps.generateRaw({
             ordered_prompts: prompts,
             generation_id: generationId,
-            connection_profile_id: this.config.connectionProfileId ?? void 0
+            connection_profile_id: this.config.timelineConnectionProfileId ?? void 0
           }),
           op.abortPromise
         ]);
@@ -2420,9 +2430,14 @@ ${flux.raw}`).join("\n\n");
         }
       }
     }
-    /** 指派酒馆 Connection Profile（只记 ID，不碰 URL/key）；空 → null（跟随当前连接）。 */
-    setConnectionProfile(id) {
-      this.config.connectionProfileId = id && id.trim() ? id : null;
+    /** 指派大总结时间轴化的 Connection Profile；空 → null（跟随当前连接）。 */
+    setTimelineConnectionProfile(id) {
+      this.config.timelineConnectionProfileId = id?.trim() || null;
+      this.persistUserSetting();
+    }
+    /** 指派摘要 → 大总结的 Connection Profile；空 → null（跟随当前连接）。 */
+    setSummaryConnectionProfile(id) {
+      this.config.summaryConnectionProfileId = id?.trim() || null;
       this.persistUserSetting();
     }
     /** 酒馆 Connection Manager 中可独立请求的连接配置。 */
@@ -3236,14 +3251,17 @@ ${flux.raw}`).join("\n\n");
 .wrap .acts .save:first-child{margin-left:auto;}
 
 /* 10 API config */
-.wrap .fnname{font-size:14.5px;font-weight:600;letter-spacing:.3px;margin-bottom:18px;}
+.wrap .api-section+.api-section{margin-top:22px;padding-top:20px;border-top:1px solid var(--line);}
+.wrap .fnname{font-size:14.5px;font-weight:600;letter-spacing:.3px;margin-bottom:12px;}
 .wrap .flabel{font-size:12px;color:var(--read);margin-bottom:8px;}
 .wrap .sel{position:relative;}
 .wrap .sel select{width:100%;appearance:none;-webkit-appearance:none;border:1px solid var(--line);border-radius:10px;background:var(--field);color:var(--ink);font:inherit;font-size:13px;padding:12px 38px 12px 14px;cursor:pointer;outline:0;}
 .wrap .sel select:focus{border-color:var(--acc);}
 .wrap .sel .chev{position:absolute;right:15px;top:50%;transform:translateY(-50%);color:var(--mut);pointer-events:none;font-size:11px;}
-.wrap .modelhint{font-size:11.5px;color:var(--mut);margin:11px 2px 0;line-height:1.6;}
-.wrap .saverow{margin-top:22px;display:flex;justify-content:flex-end;align-items:center;gap:14px;}
+.wrap .apirow{display:flex;align-items:stretch;gap:9px;}
+.wrap .apirow .sel{flex:1;min-width:0;}
+.wrap .api-save{flex:0 0 auto;min-width:56px;padding:0 15px;letter-spacing:.3px;}
+.wrap .modelhint{font-size:11.5px;color:var(--mut);margin:20px 2px 0;line-height:1.7;}
 
 /* 11 integrity */
 .wrap .imk{width:26px;height:26px;border-radius:50%;background:var(--err-soft);border:1px solid var(--err);color:var(--err);display:flex;align-items:center;justify-content:center;font-size:15px;flex:0 0 auto;margin-top:1px;}
@@ -3546,8 +3564,14 @@ ${flux.raw}`).join("\n\n");
       const integrityBar = s?.integrity.needed && !s.interrupted.length ? `<div class="warnbar" data-act="integrity-open">⚠ 检测到 ${s.integrity.toRestore.length} 份需复原的退役档 · 点此处理</div>` : "";
       const interruptedBar = s?.interrupted.length ? `<div class="warnbar" data-act="commitlog-open">⚠ 检测到 ${s.interrupted.length} 份未完成 pending · ${esc(interruptedProgressText())} · 点此查看／继续</div>` : "";
       const commitLogLink = s?.commitLog && !s.interrupted.length ? `<div class="txlink" data-act="commitlog-open">提交事务日志 · 最近一笔${esc(COMMIT_STATUS_LABEL[s.commitLog.status] ?? s.commitLog.status)} ›</div>` : "";
-      const selectedProfile = session.connectionProfiles().find((profile) => profile.id === session.config.connectionProfileId);
-      const connectionStatus = selectedProfile ? `${esc(selectedProfile.name)}${selectedProfile.model ? ` · ${esc(selectedProfile.model)}` : ""} · <b>已选</b>` : session.config.connectionProfileId ? "原连接配置已不存在 · 请重新选择" : "跟随当前酒馆连接";
+      const connectionProfiles = session.connectionProfiles();
+      const connectionStatus = (profileId) => {
+        const selected = connectionProfiles.find((profile) => profile.id === profileId);
+        if (selected) return `${esc(selected.name)}${selected.model ? ` · ${esc(selected.model)}` : ""}`;
+        return profileId ? "原配置已不存在" : "跟随当前连接";
+      };
+      const summaryConnectionStatus = connectionStatus(session.config.summaryConnectionProfileId);
+      const timelineConnectionStatus = connectionStatus(session.config.timelineConnectionProfileId);
       const promptUpdates = session.promptOverrideSummary().updates;
       const promptUpdateDot = promptUpdates ? `<span class="updot" title="${promptUpdates} 处自定义提示词有内置新版"></span>` : "";
       const summaryPromptUpdates = session.summaryPromptOverrideSummary().updates;
@@ -3571,8 +3595,8 @@ ${flux.raw}`).join("\n\n");
         <div class="rect" data-act="api">
           <span class="mark"></span>
           <div class="tx"><div class="t">API 配置</div>
-            <div class="d">为归档选择酒馆保存的连接配置</div>
-            <div class="st">${connectionStatus}</div></div>
+            <div class="d">为两个总结任务分别选择酒馆保存的连接配置</div>
+            <div class="st"><b>摘要</b> ${summaryConnectionStatus}<br><b>时间轴</b> ${timelineConnectionStatus}</div></div>
           <span class="go">›</span>
         </div>
         <div class="grouplab">总结设置 · 单次设好基本不动</div>
@@ -3955,25 +3979,35 @@ ${flux.raw}`).join("\n\n");
     }
     function renderApi() {
       const profiles = session.connectionProfiles();
-      const cur = session.config.connectionProfileId;
-      const missing = cur && !profiles.some((profile) => profile.id === cur);
-      const opts = [`<option value="">跟随当前酒馆连接</option>`].concat(
-        missing ? [`<option value="${esc(cur)}" selected disabled>原连接配置已不存在</option>`] : [],
-        profiles.map((profile) => {
-          const meta = [profile.api, profile.model].filter(Boolean).join(" · ");
-          return `<option value="${esc(profile.id)}"${profile.id === cur ? " selected" : ""}>${esc(profile.name)}${meta ? ` · ${esc(meta)}` : ""}</option>`;
-        })
-      ).join("");
-      const availability = profiles.length ? "只保存连接配置 ID；地址、密钥与代理密码均由酒馆内部读取。" : "未读到可用的 Connection Profile；可继续跟随当前酒馆连接。";
+      const optionsFor = (current) => {
+        const missing = current !== null && !profiles.some((profile) => profile.id === current);
+        return [`<option value="">跟随当前酒馆连接</option>`].concat(
+          missing ? [`<option value="${esc(current)}" selected disabled>原连接配置已不存在</option>`] : [],
+          profiles.map((profile) => {
+            const meta = [profile.api, profile.model].filter(Boolean).join(" · ");
+            return `<option value="${esc(profile.id)}"${profile.id === current ? " selected" : ""}>${esc(profile.name)}${meta ? ` · ${esc(meta)}` : ""}</option>`;
+          })
+        ).join("");
+      };
+      const summaryOptions = optionsFor(session.config.summaryConnectionProfileId);
+      const timelineOptions = optionsFor(session.config.timelineConnectionProfileId);
       return `
       <div class="top"><span class="back" data-act="home">‹</span><span class="htitle">API 配置</span><span class="grow"></span>${dnToggle()}</div>
       <div class="body">
         ${flash ? `<div class="warnbar${flash.includes("✓") ? " okbar" : ""}">${esc(flash)}</div>` : ""}
-        <div class="fnname">大总结时间轴化</div>
-        <div class="flabel">API 连接（取自酒馆 Connection Profiles）</div>
-        <div class="sel"><select data-el="connection-profile">${opts}</select><span class="chev">▾</span></div>
-        <div class="modelhint">${esc(availability)}<br>${esc(session.config.modelHint)}</div>
-        <div class="saverow"><button class="save" data-act="api-save">保存</button></div>
+        <section class="api-section">
+          <div class="fnname">摘要 → 大总结</div>
+          <div class="flabel">API 连接（取自酒馆 Connection Profiles）</div>
+          <div class="apirow"><div class="sel"><select data-el="summary-connection-profile">${summaryOptions}</select><span class="chev">▾</span></div>
+            <button class="save api-save" data-act="api-save-summary">保存</button></div>
+        </section>
+        <section class="api-section">
+          <div class="fnname">大总结时间轴化</div>
+          <div class="flabel">API 连接（取自酒馆 Connection Profiles）</div>
+          <div class="apirow"><div class="sel"><select data-el="timeline-connection-profile">${timelineOptions}</select><span class="chev">▾</span></div>
+            <button class="save api-save" data-act="api-save-timeline">保存</button></div>
+        </section>
+        <div class="modelhint">只保存连接配置 ID；地址、密钥与代理密码均由酒馆内部读取。<br>${esc(session.config.modelHint)}</div>
       </div>`;
     }
     function renderIntegrity() {
@@ -4805,10 +4839,17 @@ ${flux.raw}`).join("\n\n");
           flash = "已全部使用内置最新版 ✓";
           render();
           break;
-        case "api-save": {
-          const sel = shadow.querySelector("[data-el=connection-profile]");
-          session.setConnectionProfile(sel?.value ?? null);
-          flash = "已保存 ✓";
+        case "api-save-summary": {
+          const sel = shadow.querySelector("[data-el=summary-connection-profile]");
+          session.setSummaryConnectionProfile(sel?.value ?? null);
+          flash = "摘要 → 大总结 API 已保存 ✓";
+          render();
+          break;
+        }
+        case "api-save-timeline": {
+          const sel = shadow.querySelector("[data-el=timeline-connection-profile]");
+          session.setTimelineConnectionProfile(sel?.value ?? null);
+          flash = "大总结时间轴化 API 已保存 ✓";
           render();
           break;
         }
