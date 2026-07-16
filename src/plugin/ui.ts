@@ -24,6 +24,7 @@ import {
   type Snapshot,
   type SummaryCandidate,
 } from './session';
+import { bindPanelCaptureSeal } from './lifecycle';
 import type { SummaryPromptId } from './summary-orchestration';
 
 const CSS = `
@@ -547,6 +548,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   let failedSummaryGeneration: FailedSummaryGeneration | null = null;
   /** 关闭/取消后使旧 async continuation 自动失效。 */
   let generationUiEpoch = 0;
+  let destroyed = false;
   let renderedSurface: string | null = null;
   /** 范围选择只保存“选到哪一层”；所有更早可收原始档自动包含，绝不允许中间挖洞。 */
   let rangeThrough: number | null = null;
@@ -1884,12 +1886,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   // 补一层 window capture（最外层、最先触发）：凡是面板内发起的键盘/右键事件，在此抢先截停，
   // 赶在酒馆 capture 处理器之前。实测 stopPropagation 不影响文本框的输入/光标等**默认行为**
   // （它们不靠监听、靠 target 默认动作），且面板本身不依赖任何键盘/右键监听，故安全。
-  const sealCaptureFromPanel = (e: Event): void => {
-    if (e.composedPath().includes(root)) e.stopPropagation();
-  };
-  for (const capType of ['keydown', 'keyup', 'keypress', 'contextmenu']) {
-    panelWindow.addEventListener(capType, sealCaptureFromPanel, true);
-  }
+  const removeCaptureSeal = bindPanelCaptureSeal(panelWindow, root);
 
   const dragBlocker = 'button,[data-act],.daynight,.dn,input,textarea,select,a,[contenteditable="true"]';
   shadow.addEventListener('pointerdown', rawEvent => {
@@ -2414,6 +2411,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   });
 
   function open() {
+    if (destroyed) return;
     generationUiEpoch += 1;
     activeGenerationAttempt = null;
     failedGeneration = null;
@@ -2443,6 +2441,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     layoutPanel(true);
   }
   function close() {
+    if (destroyed) return;
     // 提交正在逐楼层落盘时不能中途拆掉会话；通常只有极短一瞬。
     if (session.phase === 'committing') return;
     generationUiEpoch += 1;
@@ -2457,22 +2456,29 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   }
 
   function destroy() {
+    if (destroyed) return;
+    destroyed = true;
     generationUiEpoch += 1;
     activeGenerationAttempt = null;
     failedGeneration = null;
     activeSummaryGenerationAttempt = null;
     failedSummaryGeneration = null;
-    if (session.phase !== 'committing') {
-      session.cancel();
-      session.discard();
-      session.discardSummary();
+    try {
+      if (session.phase !== 'committing') {
+        session.cancel();
+        session.discard();
+        session.discardSummary();
+      }
+    } finally {
+      // 即使会话清理意外失败，也必须断开 window 对面板闭包的强引用。
+      panelWindow.removeEventListener('resize', onViewportChange);
+      panelWindow.visualViewport?.removeEventListener('resize', onViewportChange);
+      panelWindow.visualViewport?.removeEventListener('scroll', onViewportChange);
+      panelWindow.removeEventListener('pointerup', finishDrag);
+      panelWindow.removeEventListener('pointercancel', finishDrag);
+      removeCaptureSeal();
+      root.remove();
     }
-    panelWindow.removeEventListener('resize', onViewportChange);
-    panelWindow.visualViewport?.removeEventListener('resize', onViewportChange);
-    panelWindow.visualViewport?.removeEventListener('scroll', onViewportChange);
-    panelWindow.removeEventListener('pointerup', finishDrag);
-    panelWindow.removeEventListener('pointercancel', finishDrag);
-    root.remove();
   }
 
   return { root, open, close, destroy };

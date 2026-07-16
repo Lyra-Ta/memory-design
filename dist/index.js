@@ -650,6 +650,120 @@ ${guidanceBlock}`;
     return summary ? { kind: "summary", notice: summary } : null;
   }
 
+  // src/plugin/lifecycle.ts
+  var PANEL_CAPTURE_EVENT_TYPES = [
+    "keydown",
+    "keyup",
+    "keypress",
+    "contextmenu"
+  ];
+  function bindPanelCaptureSeal(target, root) {
+    const sealCaptureFromPanel = (event) => {
+      if (event.composedPath().includes(root)) event.stopPropagation();
+    };
+    for (const type of PANEL_CAPTURE_EVENT_TYPES) {
+      target.addEventListener(type, sealCaptureFromPanel, true);
+    }
+    let bound = true;
+    return () => {
+      if (!bound) return;
+      bound = false;
+      for (const type of PANEL_CAPTURE_EVENT_TYPES) {
+        target.removeEventListener(type, sealCaptureFromPanel, true);
+      }
+    };
+  }
+  var RUNTIME_INSTANCE_KEY = /* @__PURE__ */ Symbol.for("HereBetween.MemoryArchiver.Runtime");
+  function asRuntimeInstance(value) {
+    if (typeof value !== "object" && typeof value !== "function" || value === null) return null;
+    return typeof value.destroy === "function" ? value : null;
+  }
+  function claimRuntimeLifecycle(host, options = {}) {
+    const previous = asRuntimeInstance(Reflect.get(host, RUNTIME_INSTANCE_KEY));
+    if (previous?.canReplace && !previous.canReplace()) return null;
+    const cleanups = [];
+    let destroyed = false;
+    let destroyPromise = null;
+    let lifecycle;
+    const reportCleanupError = (label2, error) => {
+      try {
+        options.onCleanupError?.(label2, error);
+      } catch {
+      }
+    };
+    const runCleanup = (entry) => {
+      try {
+        const result = entry.cleanup();
+        if (result && typeof result.then === "function") {
+          return Promise.resolve(result).catch((error) => {
+            reportCleanupError(entry.label, error);
+          });
+        }
+      } catch (error) {
+        reportCleanupError(entry.label, error);
+      }
+      return null;
+    };
+    lifecycle = {
+      addCleanup(label2, cleanup) {
+        const entry = { label: label2, cleanup };
+        if (!destroyed) {
+          cleanups.push(entry);
+          return;
+        }
+        const pending = runCleanup(entry);
+        if (pending) void pending;
+      },
+      canReplace() {
+        if (destroyed) return true;
+        return options.canReplace?.() ?? true;
+      },
+      isCurrent() {
+        return !destroyed && Reflect.get(host, RUNTIME_INSTANCE_KEY) === lifecycle;
+      },
+      destroy() {
+        if (destroyPromise) return destroyPromise;
+        destroyed = true;
+        let resolveDestroy = null;
+        destroyPromise = new Promise((resolve) => {
+          resolveDestroy = resolve;
+        });
+        const pending = [];
+        while (cleanups.length > 0) {
+          const task = runCleanup(cleanups.pop());
+          if (task) pending.push(task);
+        }
+        const finish = () => {
+          try {
+            if (Reflect.get(host, RUNTIME_INSTANCE_KEY) === lifecycle) {
+              Reflect.deleteProperty(host, RUNTIME_INSTANCE_KEY);
+            }
+          } catch (error) {
+            reportCleanupError("全局单例槽", error);
+          } finally {
+            resolveDestroy?.();
+          }
+        };
+        void Promise.all(pending).then(finish, (error) => {
+          reportCleanupError("异步清理", error);
+          finish();
+        });
+        return destroyPromise;
+      }
+    };
+    if (!Reflect.set(host, RUNTIME_INSTANCE_KEY, lifecycle)) {
+      throw new Error("无法在顶层页面注册记忆归档单例");
+    }
+    let ready;
+    try {
+      ready = previous ? Promise.resolve(previous.destroy()) : Promise.resolve();
+    } catch (error) {
+      ready = Promise.reject(error);
+    }
+    lifecycle.addCleanup("前序实例清理", () => ready);
+    return { lifecycle, ready };
+  }
+
   // src/plugin/regex-controller.ts
   var FLUX_WINDOW_REGEX_ID = "1a7548c3-d1c5-4fc2-8955-1933510e164c";
   var ARCHIVE_ONLY_REGEX_ID = "dd0c4c41-36dd-4c99-87bc-6e77eec4252e";
@@ -1784,7 +1898,8 @@ ${pendingBlock}`;
       __publicField(this, "deps", deps);
       __publicField(this, "config", config);
       __publicField(this, "generationTimeoutMs", generationTimeoutMs);
-      __publicField(this, "phase", "idle");
+      __publicField(this, "currentPhase", "idle");
+      __publicField(this, "commitWaiters", /* @__PURE__ */ new Set());
       __publicField(this, "activeGeneration", null);
       __publicField(this, "generationSequence", 0);
       __publicField(this, "featureEnablementListeners", /* @__PURE__ */ new Set());
@@ -1793,6 +1908,23 @@ ${pendingBlock}`;
       /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
       __publicField(this, "chatState");
       this.chatState = chatState ?? new ChatStateReader(deps);
+    }
+    get phase() {
+      return this.currentPhase;
+    }
+    set phase(next) {
+      this.currentPhase = next;
+      if (next === "committing" || this.commitWaiters.size === 0) return;
+      const waiters = [...this.commitWaiters];
+      this.commitWaiters.clear();
+      for (const resolve of waiters) resolve();
+    }
+    /** 热重载/页面销毁可等待已进入落盘的操作收尾，不在提交时立即返回。 */
+    waitForCommitToFinish() {
+      if (this.phase !== "committing") return Promise.resolve();
+      return new Promise((resolve) => {
+        this.commitWaiters.add(resolve);
+      });
     }
     assertCurrentChat(expectedEpoch) {
       if (!this.chatState.isCurrentChatEpoch(expectedEpoch)) {
@@ -3419,6 +3551,7 @@ ${flux.raw}`).join("\n\n");
     let activeSummaryGenerationAttempt = null;
     let failedSummaryGeneration = null;
     let generationUiEpoch = 0;
+    let destroyed = false;
     let renderedSurface = null;
     let rangeThrough = null;
     let panelOffset = { x: 0, y: 0 };
@@ -4519,12 +4652,7 @@ ${flux.raw}`).join("\n\n");
     ]) {
       root.addEventListener(sealedType, (e) => e.stopPropagation());
     }
-    const sealCaptureFromPanel = (e) => {
-      if (e.composedPath().includes(root)) e.stopPropagation();
-    };
-    for (const capType of ["keydown", "keyup", "keypress", "contextmenu"]) {
-      panelWindow.addEventListener(capType, sealCaptureFromPanel, true);
-    }
+    const removeCaptureSeal = bindPanelCaptureSeal(panelWindow, root);
     const dragBlocker = 'button,[data-act],.daynight,.dn,input,textarea,select,a,[contenteditable="true"]';
     shadow.addEventListener("pointerdown", (rawEvent) => {
       const ev = rawEvent;
@@ -5029,6 +5157,7 @@ ${flux.raw}`).join("\n\n");
       }
     });
     function open() {
+      if (destroyed) return;
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
       failedGeneration = null;
@@ -5058,6 +5187,7 @@ ${flux.raw}`).join("\n\n");
       layoutPanel(true);
     }
     function close() {
+      if (destroyed) return;
       if (session.phase === "committing") return;
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
@@ -5070,22 +5200,28 @@ ${flux.raw}`).join("\n\n");
       session.discardSummary();
     }
     function destroy() {
+      if (destroyed) return;
+      destroyed = true;
       generationUiEpoch += 1;
       activeGenerationAttempt = null;
       failedGeneration = null;
       activeSummaryGenerationAttempt = null;
       failedSummaryGeneration = null;
-      if (session.phase !== "committing") {
-        session.cancel();
-        session.discard();
-        session.discardSummary();
+      try {
+        if (session.phase !== "committing") {
+          session.cancel();
+          session.discard();
+          session.discardSummary();
+        }
+      } finally {
+        panelWindow.removeEventListener("resize", onViewportChange);
+        panelWindow.visualViewport?.removeEventListener("resize", onViewportChange);
+        panelWindow.visualViewport?.removeEventListener("scroll", onViewportChange);
+        panelWindow.removeEventListener("pointerup", finishDrag);
+        panelWindow.removeEventListener("pointercancel", finishDrag);
+        removeCaptureSeal();
+        root.remove();
       }
-      panelWindow.removeEventListener("resize", onViewportChange);
-      panelWindow.visualViewport?.removeEventListener("resize", onViewportChange);
-      panelWindow.visualViewport?.removeEventListener("scroll", onViewportChange);
-      panelWindow.removeEventListener("pointerup", finishDrag);
-      panelWindow.removeEventListener("pointercancel", finishDrag);
-      root.remove();
     }
     return { root, open, close, destroy };
   }
@@ -5126,7 +5262,7 @@ ${flux.raw}`).join("\n\n");
       return null;
     }
   }
-  function init() {
+  async function init() {
     console.info(TAG2, CSS2, "init 开始");
     const g = globalThis;
     const needed = [
@@ -5157,219 +5293,262 @@ ${flux.raw}`).join("\n\n");
     }
     const doc = topDocument();
     const inIframe = doc !== document;
-    let reconcileFeatureRuntime = () => null;
-    let stopFeatureEnablementListener = () => {
-    };
-    const panel = createPanel(session, doc);
-    doc.body.appendChild(panel.root);
-    console.info(TAG2, CSS2, `面板已挂到 ${inIframe ? "顶层主页面" : "本页"} body`);
-    let observedBoundary = session.config.boundary ?? 0;
-    let reminderBlocked = false;
-    let chatReloadTimer = null;
-    let pendingChatIdentity = runtimeCurrentChatIdentity();
-    let chatSwitchPending = false;
-    let openAfterChatReload = false;
-    session.chatState.reset(pendingChatIdentity);
-    const runtimeRegexUpdater = typeof g.updateTavernRegexesWith === "function" ? g.updateTavernRegexesWith : void 0;
-    const regexDepthController = createRegexDepthController({
-      updateTavernRegexesWith: runtimeRegexUpdater,
-      warn: (message, error) => {
-        if (error === void 0) console.warn(TAG2, CSS2, message);
-        else console.warn(TAG2, CSS2, message, error);
+    const lifecycleHost = doc.defaultView ?? window;
+    const claim = claimRuntimeLifecycle(lifecycleHost, {
+      canReplace: () => session.phase !== "committing",
+      onCleanupError: (label2, error) => {
+        console.warn(TAG2, CSS2, `清理失败（${label2}）：`, error);
       }
     });
-    const featureRuntimeEnabled = () => session.config.timelineEnabled || session.config.summaryEnabled;
-    const syncRegexDepth = (head) => {
-      if (!featureRuntimeEnabled()) return;
-      regexDepthController.request(head.regexWindow);
-    };
-    const openPanel = () => {
-      if (chatSwitchPending) {
-        openAfterChatReload = true;
-        return;
-      }
-      if (!featureRuntimeEnabled()) {
-        const identity = runtimeCurrentChatIdentity();
-        session.chatState.reset(identity);
-        pendingChatIdentity = identity;
-        session.config = loadConfig(deps);
-        observedBoundary = session.config.boundary ?? 0;
-        reminderBlocked = false;
-        reconcileFeatureRuntime();
-      }
-      panel.open();
-    };
-    const refreshReminderBaseline = (read) => {
-      try {
-        const snapshot = session.refresh(read);
-        observedBoundary = snapshot.boundary;
-        reminderBlocked = snapshot.interrupted.length > 0 || snapshot.integrity.needed;
-        return snapshot;
-      } catch (e) {
-        reminderBlocked = true;
-        console.warn("[记忆归档] 提醒基线刷新失败：", e);
-        return null;
-      }
-    };
-    const checkReminder = (head, summaryTrigger) => {
-      if (chatSwitchPending || reminderBlocked || session.phase !== "idle" || panel.root.style.display !== "none") return;
-      const boundary = Math.max(observedBoundary, session.config.boundary ?? 0);
-      const decision = buildReminderDecision({
-        timeline: {
-          currentFloor: head.currentFloor,
-          boundary,
-          n: session.config.n,
-          lastDismissedFloor: session.config.lastDismissedFloor
-        },
-        summary: {
-          currentFloor: head.currentFloor,
-          latestArchiveFloor: head.latestLiveArchiveFloor,
-          interval: session.config.summaryInterval,
-          lastRemindedFloor: session.config.summaryLastRemindedFloor
-        },
-        summaryTrigger,
-        timelineEnabled: session.config.timelineEnabled,
-        summaryEnabled: session.config.summaryEnabled
+    if (!claim) {
+      console.warn(TAG2, CSS2, "旧实例正在提交，本次热重载已跳过");
+      return;
+    }
+    const { lifecycle } = claim;
+    try {
+      await claim.ready;
+      if (!lifecycle.isCurrent()) return;
+      let reconcileFeatureRuntime = () => null;
+      let stopFeatureEnablementListener = () => {
+      };
+      lifecycle.addCleanup("在途提交", () => session.waitForCommitToFinish());
+      const panel = createPanel(session, doc);
+      lifecycle.addCleanup("面板", () => panel.destroy());
+      lifecycle.addCleanup("功能开关监听", () => {
+        const stop = stopFeatureEnablementListener;
+        stopFeatureEnablementListener = () => {
+        };
+        stop();
       });
-      if (!decision) return;
-      try {
-        if (typeof toastr === "undefined" || typeof toastr.info !== "function") return;
-        const isTimeline = decision.kind === "timeline";
-        const shown = toastr.info(
-          isTimeline ? `已可总结 ${decision.notice.from}–${decision.notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。` : `距上次摘要 → 大总结已 ${decision.notice.distance} 层，点击打开`,
-          isTimeline ? "记忆归档" : "摘要 → 大总结",
-          {
-            timeOut: 8e3,
-            extendedTimeOut: 2e3,
-            closeButton: true,
-            preventDuplicates: true,
-            escapeHtml: true,
-            onclick: openPanel
-          }
-        );
-        if (shown === null || shown === void 0) return;
-        if (isTimeline) {
-          session.config.lastDismissedFloor = decision.notice.currentFloor;
-        } else {
-          session.config.summaryLastRemindedFloor = decision.notice.currentFloor;
+      doc.body.appendChild(panel.root);
+      console.info(TAG2, CSS2, `面板已挂到 ${inIframe ? "顶层主页面" : "本页"} body`);
+      let observedBoundary = session.config.boundary ?? 0;
+      let reminderBlocked = false;
+      let chatReloadTimer = null;
+      let pendingChatIdentity = runtimeCurrentChatIdentity();
+      let chatSwitchPending = false;
+      let openAfterChatReload = false;
+      lifecycle.addCleanup("聊天切换定时器", () => {
+        if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+        chatReloadTimer = null;
+      });
+      session.chatState.reset(pendingChatIdentity);
+      const runtimeRegexUpdater = typeof g.updateTavernRegexesWith === "function" ? g.updateTavernRegexesWith : void 0;
+      const regexDepthController = createRegexDepthController({
+        updateTavernRegexesWith: runtimeRegexUpdater,
+        warn: (message, error) => {
+          if (error === void 0) console.warn(TAG2, CSS2, message);
+          else console.warn(TAG2, CSS2, message, error);
         }
-        session.persist();
-      } catch (e) {
-        console.warn("[记忆归档] 轻提醒播出失败：", e);
-      }
-    };
-    const reloadForChangedChat = () => {
-      chatReloadTimer = null;
-      if (session.phase === "committing") {
-        chatReloadTimer = setTimeout(reloadForChangedChat, 250);
-        return;
-      }
-      try {
-        panel.close();
-        session.config = loadConfig(deps);
-        observedBoundary = session.config.boundary ?? 0;
-        reminderBlocked = false;
-        const startedSnapshot = reconcileFeatureRuntime();
-        const snapshot = featureRuntimeEnabled() ? startedSnapshot ?? refreshReminderBaseline() : null;
-        if (snapshot && snapshot !== startedSnapshot) syncRegexDepth(snapshot);
-        chatSwitchPending = false;
-        if (openAfterChatReload) {
-          openAfterChatReload = false;
+      });
+      lifecycle.addCleanup("正则深度控制器", () => {
+        regexDepthController.destroy();
+        return regexDepthController.flush();
+      });
+      const featureRuntimeEnabled = () => session.config.timelineEnabled || session.config.summaryEnabled;
+      const syncRegexDepth = (head) => {
+        if (!featureRuntimeEnabled()) return;
+        regexDepthController.request(head.regexWindow);
+      };
+      const openPanel = () => {
+        if (chatSwitchPending) {
+          openAfterChatReload = true;
+          return;
+        }
+        if (!featureRuntimeEnabled()) {
+          const identity = runtimeCurrentChatIdentity();
+          session.chatState.reset(identity);
+          pendingChatIdentity = identity;
+          session.config = loadConfig(deps);
+          observedBoundary = session.config.boundary ?? 0;
+          reminderBlocked = false;
+          reconcileFeatureRuntime();
+        }
+        panel.open();
+      };
+      const refreshReminderBaseline = (read) => {
+        try {
+          const snapshot = session.refresh(read);
+          observedBoundary = snapshot.boundary;
+          reminderBlocked = snapshot.interrupted.length > 0 || snapshot.integrity.needed;
+          return snapshot;
+        } catch (e) {
+          reminderBlocked = true;
+          console.warn("[记忆归档] 提醒基线刷新失败：", e);
+          return null;
+        }
+      };
+      const checkReminder = (head, summaryTrigger) => {
+        if (chatSwitchPending || reminderBlocked || session.phase !== "idle" || panel.root.style.display !== "none") return;
+        const boundary = Math.max(observedBoundary, session.config.boundary ?? 0);
+        const decision = buildReminderDecision({
+          timeline: {
+            currentFloor: head.currentFloor,
+            boundary,
+            n: session.config.n,
+            lastDismissedFloor: session.config.lastDismissedFloor
+          },
+          summary: {
+            currentFloor: head.currentFloor,
+            latestArchiveFloor: head.latestLiveArchiveFloor,
+            interval: session.config.summaryInterval,
+            lastRemindedFloor: session.config.summaryLastRemindedFloor
+          },
+          summaryTrigger,
+          timelineEnabled: session.config.timelineEnabled,
+          summaryEnabled: session.config.summaryEnabled
+        });
+        if (!decision) return;
+        try {
+          if (typeof toastr === "undefined" || typeof toastr.info !== "function") return;
+          const isTimeline = decision.kind === "timeline";
+          const shown = toastr.info(
+            isTimeline ? `已可总结 ${decision.notice.from}–${decision.notice.through} 层。点击打开记忆归档；忽略后 +50 层再提醒。` : `距上次摘要 → 大总结已 ${decision.notice.distance} 层，点击打开`,
+            isTimeline ? "记忆归档" : "摘要 → 大总结",
+            {
+              timeOut: 8e3,
+              extendedTimeOut: 2e3,
+              closeButton: true,
+              preventDuplicates: true,
+              escapeHtml: true,
+              onclick: openPanel
+            }
+          );
+          if (shown === null || shown === void 0) return;
+          if (isTimeline) {
+            session.config.lastDismissedFloor = decision.notice.currentFloor;
+          } else {
+            session.config.summaryLastRemindedFloor = decision.notice.currentFloor;
+          }
+          session.persist();
+        } catch (e) {
+          console.warn("[记忆归档] 轻提醒播出失败：", e);
+        }
+      };
+      const reloadForChangedChat = () => {
+        chatReloadTimer = null;
+        if (session.phase === "committing") {
+          chatReloadTimer = setTimeout(reloadForChangedChat, 250);
+          return;
+        }
+        try {
+          panel.close();
+          session.config = loadConfig(deps);
+          observedBoundary = session.config.boundary ?? 0;
+          reminderBlocked = false;
+          const startedSnapshot = reconcileFeatureRuntime();
+          const snapshot = featureRuntimeEnabled() ? startedSnapshot ?? refreshReminderBaseline() : null;
+          if (snapshot && snapshot !== startedSnapshot) syncRegexDepth(snapshot);
+          chatSwitchPending = false;
+          if (openAfterChatReload) {
+            openAfterChatReload = false;
+            openPanel();
+          } else if (snapshot) {
+            checkReminder(snapshot, snapshot.summaryTrigger);
+          }
+        } catch (e) {
+          reminderBlocked = true;
+          console.warn("[记忆归档] 切换聊天后重载配置失败：", e);
+        }
+      };
+      lifecycle.addCleanup("脚本按钮", () => {
+        updateScriptButtonsWith((buttons) => buttons.filter((b) => b.name !== BUTTON_NAME));
+      });
+      appendInexistentScriptButtons([{ name: BUTTON_NAME, visible: true }]);
+      const ev = getButtonEvent(BUTTON_NAME);
+      console.info(TAG2, CSS2, "按钮事件名 =", ev);
+      const trackButtonSubscription = (subscription) => {
+        lifecycle.addCleanup("按钮事件监听", () => subscription.stop());
+      };
+      trackButtonSubscription(eventOn(ev, () => {
+        console.info(TAG2, CSS2, "按钮被点击 → 打开面板");
+        try {
           openPanel();
-        } else if (snapshot) {
+        } catch (e) {
+          console.error("[记忆归档] 打开面板失败：", e);
+        }
+      }));
+      try {
+        trackButtonSubscription(eventOn(BUTTON_NAME, () => {
+          console.info(TAG2, CSS2, "（兜底事件）按钮名事件触发 → 打开面板");
+          openPanel();
+        }));
+      } catch {
+      }
+      const reminderEvents = resolveReminderEventNames(runtimeTavernEventTypes());
+      let chatActivity = null;
+      lifecycle.addCleanup("聊天活动监听", () => {
+        const activity = chatActivity;
+        chatActivity = null;
+        activity?.destroy();
+      });
+      const bindFeatureActivity = () => {
+        if (chatActivity) return;
+        chatActivity = bindChatActivityMonitor({
+          state: session.chatState,
+          events: reminderEvents,
+          eventOn: (eventType, listener) => eventOn(eventType, listener),
+          initialChatIdentity: pendingChatIdentity,
+          getCurrentChatIdentity: runtimeCurrentChatIdentity,
+          onHeadActivity: (head) => {
+            syncRegexDepth(head);
+            checkReminder(head);
+          },
+          onArchiveInvalidated: (read) => {
+            syncRegexDepth(read);
+            const snapshot = refreshReminderBaseline(read);
+            if (snapshot) checkReminder(snapshot, snapshot.summaryTrigger);
+          },
+          onChatChanged: (chatIdentity) => {
+            chatSwitchPending = true;
+            reminderBlocked = true;
+            pendingChatIdentity = chatIdentity;
+            panel.close();
+            if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
+            chatReloadTimer = setTimeout(reloadForChangedChat, 150);
+          }
+        });
+      };
+      reconcileFeatureRuntime = () => {
+        if (!featureRuntimeEnabled()) {
+          chatActivity?.destroy();
+          chatActivity = null;
+          regexDepthController.restoreDefault();
+          return null;
+        }
+        if (chatActivity) return null;
+        bindFeatureActivity();
+        const snapshot = refreshReminderBaseline();
+        if (snapshot) {
+          syncRegexDepth(snapshot);
           checkReminder(snapshot, snapshot.summaryTrigger);
         }
-      } catch (e) {
-        reminderBlocked = true;
-        console.warn("[记忆归档] 切换聊天后重载配置失败：", e);
-      }
-    };
-    appendInexistentScriptButtons([{ name: BUTTON_NAME, visible: true }]);
-    const ev = getButtonEvent(BUTTON_NAME);
-    console.info(TAG2, CSS2, "按钮事件名 =", ev);
-    const buttonSubscriptions = [];
-    buttonSubscriptions.push(eventOn(ev, () => {
-      console.info(TAG2, CSS2, "按钮被点击 → 打开面板");
-      try {
-        openPanel();
-      } catch (e) {
-        console.error("[记忆归档] 打开面板失败：", e);
-      }
-    }));
-    try {
-      buttonSubscriptions.push(eventOn(BUTTON_NAME, () => {
-        console.info(TAG2, CSS2, "（兜底事件）按钮名事件触发 → 打开面板");
-        openPanel();
-      }));
-    } catch {
-    }
-    const reminderEvents = resolveReminderEventNames(runtimeTavernEventTypes());
-    let chatActivity = null;
-    const bindFeatureActivity = () => {
-      if (chatActivity) return;
-      chatActivity = bindChatActivityMonitor({
-        state: session.chatState,
-        events: reminderEvents,
-        eventOn: (eventType, listener) => eventOn(eventType, listener),
-        initialChatIdentity: pendingChatIdentity,
-        getCurrentChatIdentity: runtimeCurrentChatIdentity,
-        onHeadActivity: (head) => {
-          syncRegexDepth(head);
-          checkReminder(head);
-        },
-        onArchiveInvalidated: (read) => {
-          syncRegexDepth(read);
-          const snapshot = refreshReminderBaseline(read);
-          if (snapshot) checkReminder(snapshot, snapshot.summaryTrigger);
-        },
-        onChatChanged: (chatIdentity) => {
-          chatSwitchPending = true;
-          reminderBlocked = true;
-          pendingChatIdentity = chatIdentity;
-          panel.close();
-          if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
-          chatReloadTimer = setTimeout(reloadForChangedChat, 150);
-        }
+        return snapshot;
+      };
+      stopFeatureEnablementListener = session.onFeatureEnablementChanged(() => {
+        reconcileFeatureRuntime();
       });
-    };
-    reconcileFeatureRuntime = () => {
-      if (!featureRuntimeEnabled()) {
-        chatActivity?.destroy();
-        chatActivity = null;
-        regexDepthController.restoreDefault();
-        return null;
-      }
-      if (chatActivity) return null;
-      bindFeatureActivity();
-      const snapshot = refreshReminderBaseline();
-      if (snapshot) {
-        syncRegexDepth(snapshot);
-        checkReminder(snapshot, snapshot.summaryTrigger);
-      }
-      return snapshot;
-    };
-    stopFeatureEnablementListener = session.onFeatureEnablementChanged(() => {
       reconcileFeatureRuntime();
-    });
-    reconcileFeatureRuntime();
-    $(window).on("pagehide", () => {
-      if (chatReloadTimer !== null) clearTimeout(chatReloadTimer);
-      chatActivity?.destroy();
-      regexDepthController.destroy();
-      stopFeatureEnablementListener();
-      for (const subscription of buttonSubscriptions) subscription.stop();
-      updateScriptButtonsWith((buttons) => buttons.filter((b) => b.name !== BUTTON_NAME));
-      panel.destroy();
-    });
-    console.info(TAG2, CSS2, "init 完成 ✓（点按钮应看到「按钮被点击」日志）");
+      const onPageHide = (event) => {
+        if (event.persisted) return;
+        void lifecycle.destroy();
+      };
+      const pageHideTargets = lifecycleHost === window ? [window] : [window, lifecycleHost];
+      for (const target of pageHideTargets) target.addEventListener("pagehide", onPageHide);
+      lifecycle.addCleanup("pagehide 监听", () => {
+        for (const target of pageHideTargets) target.removeEventListener("pagehide", onPageHide);
+      });
+      console.info(TAG2, CSS2, "init 完成 ✓（点按钮应看到「按钮被点击」日志）");
+    } catch (error) {
+      await lifecycle.destroy();
+      throw error;
+    }
   }
   try {
     $(() => {
-      try {
-        init();
-      } catch (e) {
+      void init().catch((e) => {
         console.error("[记忆归档] init 抛错：", e);
-      }
+      });
     });
   } catch (e) {
     console.error("[记忆归档] 启动抛错（$ 不可用？）：", e);

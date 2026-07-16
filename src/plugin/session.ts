@@ -261,7 +261,8 @@ export interface SummaryCandidate {
 }
 
 export class ArchiverSession {
-  phase: Phase = 'idle';
+  private currentPhase: Phase = 'idle';
+  private readonly commitWaiters = new Set<() => void>();
   private activeGeneration: ActiveGeneration | null = null;
   private generationSequence = 0;
   private readonly featureEnablementListeners = new Set<() => void>();
@@ -269,6 +270,26 @@ export class ArchiverSession {
   private summaryRound: SummaryRound | null = null;
   /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
   readonly chatState: ChatStateReader;
+
+  get phase(): Phase {
+    return this.currentPhase;
+  }
+
+  private set phase(next: Phase) {
+    this.currentPhase = next;
+    if (next === 'committing' || this.commitWaiters.size === 0) return;
+    const waiters = [...this.commitWaiters];
+    this.commitWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  /** 热重载/页面销毁可等待已进入落盘的操作收尾，不在提交时立即返回。 */
+  waitForCommitToFinish(): Promise<void> {
+    if (this.phase !== 'committing') return Promise.resolve();
+    return new Promise<void>(resolve => {
+      this.commitWaiters.add(resolve);
+    });
+  }
 
   constructor(
     private readonly deps: ArchiverTavernDeps,

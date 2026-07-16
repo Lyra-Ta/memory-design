@@ -1213,8 +1213,16 @@ test('普通总结应用：写回期间进入 committing，写入失败则回 pr
 
   const applying = session.applySummary(candidate);
   assert.equal(session.phase, 'committing', '写位尚未落盘时 UI 必须禁止关闭/放弃');
+  let lifecycleReleased = false;
+  const commitBarrier = session.waitForCommitToFinish().then(() => {
+    lifecycleReleased = true;
+  });
+  await Promise.resolve();
+  assert.equal(lifecycleReleased, false, '生命周期交接不得越过在途落盘');
   gate.resolve();
   await assert.rejects(() => applying, /模拟落盘失败/);
+  await commitBarrier;
+  assert.equal(lifecycleReleased, true);
   assert.equal(session.phase, 'preview');
   assert.equal(session.config.summaryPlaceholderFloor, candidate.placeholderFloor);
   assert.equal(session.summaryRetryAvailable(), false, '仍处于结果预览态，而非首次失败重试态');
