@@ -480,9 +480,10 @@ export class ArchiverSession {
   }
 
   /**
-   * 摘要 → 总结的纯收集：Archive Context 取扫描到的完整 <World_Archive>；
-   * Target Flux 只取最近 Archive 层 x 之后、sourceThrough=q 以内的完整 Flux 标签块。
-   * 两者都只作为冻结读取材料，不改写来源楼层。
+   * 摘要 → 总结的纯收集：Historical Context 的前半取全部完整在场
+   * <World_Archive>，后半只取最近 Archive 层 x 之后、sourceThrough=q
+   * 以内的完整 Flux 标签块。两类来源在此保持分离以供溯源，发起生成时
+   * 才按顺序合并进同一个 <Historical_Context>，且均不改写来源楼层。
    */
   collectSummary(read: ChatReadSnapshot): SummaryCollected {
     const archives = liveEntries(read.table).sort(

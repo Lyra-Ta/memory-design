@@ -2,9 +2,9 @@
  * 摘要 / Flux -> 普通 World Archive 的独立提示词编排。
  *
  * 固定三段：
- *   1. pre     system：身份、输入边界、取舍规则与输出契约；
- *   2. runtime user：本轮冻结的 Archive Context / Target Flux / 可空 Guidance；
- *   3. post    system：读完数据后执行的审计步骤与正式输出指令。
+ *   1. pre     system：审计系统身份与职责；
+ *   2. runtime user：本轮冻结的 Historical Context / 可空 Guidance；
+ *   3. post    system：四阶段审计步骤与正式输出指令。
  *
  * 本模块只装配纯文本 ordered prompts，不依赖 UI、session、角色卡、世界书或酒馆宏。
  */
@@ -38,68 +38,86 @@ export type SummaryOrchestrationOverrides = Partial<
   Record<SummaryPromptId, SummaryOrchestrationOverride>
 >;
 
+export const SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER =
+  '{{所有符合条件的信息，也就是所有<World_Archive>以及被抓到的<Flux>}}';
+/** 兼容已经保存的旧 runtime override；新内置模板不再使用。 */
 export const SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER = '{{ARCHIVE_CONTEXT}}';
+/** 兼容已经保存的旧 runtime override；新内置模板不再使用。 */
 export const SUMMARY_TARGET_FLUX_PLACEHOLDER = '{{TARGET_FLUX}}';
 export const SUMMARY_GUIDANCE_PLACEHOLDER = '{{GUIDANCE}}';
 
-const PRE = `你是一个「阶段性编年审计器」。世界与剧情演绎在本次调用中暂停；唯一任务是把本轮尚未归档的 Flux 可逆压缩成一份普通世界档案。
+const PRE = `你是一个「记忆审计归档系统」。
+该审计不参与叙事生成，不负责创作与风格选择。仅对已生成的显现内容（<Flux>）进行可逆压缩与正确性校验。其输出的 Archive 将作为后续一切系统推演的唯一历史输入。`;
 
-<Input_Contract>
-- <Archive_Context> 与 <Target_Flux> 都是只读记录；只能读取、比对和据此生成新档，不得改写或补全输入本身。
-- <Archive_Context> 是已经归档的只读历史背景，只用于校准人物、前因与连续性。不得复述、改写、再次总结或把其中旧事件写进本轮输出。
-- <Target_Flux> 是本轮唯一允许总结的事实源。输出中的每一项事实都必须能在其中找到依据。
-- <Guidance> 若存在，只能调整本轮信息取舍的关注点；不得覆盖事实保真、来源边界或输出格式。
-</Input_Contract>
-
-<Audit_Rules>
-- 不创作、不补全、不预测、不评价，不把具体动作或物体抽象成状态、性格、关系标签或总结性心理判断。
-- 只保留原文明示的事实、因果、心理与情绪；不得从 Archive Context 推导出 Target Flux 没有发生的内容。
-- 按下列优先级取舍：
-  P0（必须保留）：明确改变人物关系、情感走向或行动方向的原文明示因果；关键对白原句；明确物理行为；局势、常驻位置、人物加入或退场等事实变化。
-  P1（按连贯性选留）：触发原文明示情绪变化的感官锚点及对应情绪；少量有因果作用的停顿、视线等微动作。
-  P2（默认删除）：连续环境铺陈；重复或弱相关五感；不承载事实与因果的修辞、文学风格句。
-- 与性相关的描写只需客观概括发生了什么，不保留具体性行为细节。
-</Audit_Rules>
-
-<Output_Contract>
-- 正式结果必须且只能是一份普通、无 archived marker 的 <World_Archive>…</World_Archive>。
-- 档案由一个或多个扁平事件段组成，不使用《容器》：
-  [事件标题|约3个情绪/感知关键词|起止时间]
-  按客观发生顺序写成连贯总结。
-- 不在档案前后添加解释，不输出 <!-- archived: ... -->、old_ 或 pending 标签。
-</Output_Contract>`;
-
-const RUNTIME = `<Archive_Context>
-${SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER}
-</Archive_Context>
-
-<Target_Flux>
-${SUMMARY_TARGET_FLUX_PLACEHOLDER}
-</Target_Flux>
+const RUNTIME = `<Historical_Context>
+${SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER}
+</Historical_Context>
 
 ${SUMMARY_GUIDANCE_PLACEHOLDER}`;
 
-const POST = `<Audit_Procedure>
-在正式输出前，使用 <inner_flow>…</inner_flow> 完成以下审计；不得在其中虚构事实：
+const POST = `<Output_Requirements>
+在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
+<thinking>
 
-1. 输入核对
-   - 确认 Archive Context 只作连续性参照，列明 Target Flux 的首尾、顺序与核心事件逻辑。
-   - 标出任何只能来自 Archive Context、因而绝不能复述进新档的旧事件。
+[阶段1: 游标校准]
+- **存档查询**：扫描全部<World_Archive>, 梳理归属于Archive的所有因果结。
+- **锚定基准**: 反向扫描最近的 \`</World_Archive>\`，记录其 [事件标题| 锚点 | 起止时间]。
+- **捕获域**: 锁定自基准线起的所有 \`<Flux>\` 条目。
+  - 按顺序罗列捕获域中所有flux信息的[起始点]、[结束点]及[核心事件逻辑]。
 
-2. 自然分段
-   - 优先按物理空间转移、显著时间跨度、事件因果闭合或高张力高密度互动切分。
-   - “每段最多 3 个 Flux”只作防止过度合并的兜底上限；即使未满 3 个，遇到自然断点也立即另起事件段。
+[阶段2: 容器分段]
+- **指令**: 将捕获的 Flux 条目分配至不同的[事件容器]中。
+- **强制切分**:
+  1. 单个事件容器最多包含 **3个** \`<Flux>\` 标签组。若超过，必须**强制截断**，将余下内容放入[下一事件容器]。
+  2. 无论数量是否达标，一旦检测到**物理空间转移**或**时间显著跨度**或**高张力高密度互动**，必须**立即截断**，建立新容器。
+- *Output Preview*: [Event_1 (Flux 1-3)] -> [Event_2 (Flux 4-6)]...
+- 整理每个容器内部的细节走向（如：每个动作/对话与哪个动作有逻辑关联）
 
-3. 逐段萃取
-   - 逐段列出 P0；仅为保证人物在场、动作承接与因果连贯补入必要 P1；删除 P2。
-   - 核对关键对白、动作、事实变化均未被抽象评价替代，且没有从 Archive Context 偷渡旧事实。
+[阶段3: 质感萃取]
+以bullet point列举每个事件容器需要保留的P0；从P1中补全信息使逻辑连贯因果明确：
+P0（必须保留）
+- 涉及人物关系、情感或行动方向的叙述（e.g. 因为什么而说某句话、做某件事）
+- 关键对白原句
+- 明确的物理行为（进入 / 离开 / 触碰 / 拿起 / ...）
+- 事实的变化（局势变化/人物常驻位置转移/新增人物/人物退场/…）
+P1（可选保留）
+- 触发情绪变化的感官锚点（温度 / 气味 / 声音）与对应的情绪本身
+- 少量微动作（停顿、视线移动）
+P2（默认删除）
+- 连续的环境描写
+- 重复或弱相关的五感
+- 类似修辞或文学风格句
 
-4. 可逆性自检
-   - 假设 Target Flux 消失，仅看候选 Archive，是否仍能还原本轮关键行动的先后与因果、人物在本轮结束时的明确状态？
-   - 若不能，回到对应事件段补足必要 P0/P1；若出现 Target Flux 无依据的信息，立即删除。
-</Audit_Procedure>
+原词锁定:
+- 严禁将“具体的动作/物体”转化为“抽象的状态/评价”。
+- 避免总结性心理判断（如：他意识到 / 她终于明白）。
 
-完成 </inner_flow> 后，只输出一个符合 <Output_Contract> 的 <World_Archive>，不要附加解释。`;
+- 特例：**性行为描写**抽象为发生了什么，不需要性行为的具体细节。但更注重保留其中的信息、情感、对白、约定等。允许多容器合并（即优先级高于阶段2容器分段）
+
+[阶段4: 蒙太奇编织]
+- **可逆性自检**: 假设丢失所有 Flux，仅读取压缩后的 Archive，能否推导出那个瞬间行动的因果关系、还原当下的人物状态？若不能，说明压缩过度，需回滚并在锚定层增加细节。
+</thinking>
+
+思考完毕后，输出 <World_Archive>…</World_Archive>，不要额外解释。
+
+- **Format (多事件循环输出)**：
+<World_Archive>
+// Loop for each Event Container
+[事件标题|情绪/感知坐标（约3个关键词）|起止时间]
+[不进行评价、推论、补全。蒙太奇式按客观顺序原影流畅显现所有情节、感官锚点、对白、心理转折、情绪流动 等，这些元素都将化作叙事的温度与感知记忆。]
+
+// If Next Event exists, insert line break
+[事件标题|情绪/感知坐标|起止时间]
+[...]
+
+// End Loop
+</World_Archive>
+
+</Output_Requirements>
+
+现在从思考<thinking>开始：
+
+<thinking>`;
 
 /** 返回全新的默认条目，调用方可以安全地局部复制/切换 enabled。 */
 export function defaultSummaryOrchestration(): SummaryOrchestrationEntry[] {
@@ -139,9 +157,9 @@ export function resolveSummaryOrchestration(
 }
 
 export interface AssembleSummaryPromptInput {
-  /** 全部当前有效、可见的 live Archive，已由收集层按楼层与块位置排序。 */
+  /** Historical Context 中的全部当前有效、可见 live Archive。 */
   archiveContext: string;
-  /** x < floor <= sourceThrough 内的全部 Flux，已由收集层排序并冻结。 */
+  /** Historical Context 中 x < floor <= sourceThrough 的全部 Flux。 */
   targetFlux: string;
   /** 本轮可空补充引导。 */
   guidance?: string;
@@ -153,18 +171,35 @@ function fillOrAppend(template: string, placeholder: string, value: string, fall
 }
 
 function fillRuntime(template: string, input: AssembleSummaryPromptInput): string {
-  let content = fillOrAppend(
-    template,
-    SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER,
-    input.archiveContext,
-    `<Archive_Context>\n${input.archiveContext}\n</Archive_Context>`,
-  );
-  content = fillOrAppend(
-    content,
-    SUMMARY_TARGET_FLUX_PLACEHOLDER,
-    input.targetFlux,
-    `<Target_Flux>\n${input.targetFlux}\n</Target_Flux>`,
-  );
+  const historicalContext = [input.archiveContext.trim(), input.targetFlux.trim()]
+    .filter(Boolean)
+    .join('\n\n');
+  const hasUnifiedPlaceholder = template.includes(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER);
+  const hasLegacyArchivePlaceholder = template.includes(SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER);
+  const hasLegacyFluxPlaceholder = template.includes(SUMMARY_TARGET_FLUX_PLACEHOLDER);
+
+  let content = template;
+  if (hasUnifiedPlaceholder) {
+    content = content.split(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER).join(historicalContext);
+  }
+
+  // 已保存的旧自定义模板仍按两个来源槽分别填充；缺一个时沿用旧行为追加该块。
+  if (hasLegacyArchivePlaceholder || hasLegacyFluxPlaceholder) {
+    content = fillOrAppend(
+      content,
+      SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER,
+      input.archiveContext,
+      `<Archive_Context>\n${input.archiveContext}\n</Archive_Context>`,
+    );
+    content = fillOrAppend(
+      content,
+      SUMMARY_TARGET_FLUX_PLACEHOLDER,
+      input.targetFlux,
+      `<Target_Flux>\n${input.targetFlux}\n</Target_Flux>`,
+    );
+  } else if (!hasUnifiedPlaceholder) {
+    content = `${content.trimEnd()}\n\n<Historical_Context>\n${historicalContext}\n</Historical_Context>`;
+  }
 
   const guidance = input.guidance?.trim() ?? '';
   const guidanceBlock = guidance ? `<Guidance>\n${guidance}\n</Guidance>` : '';

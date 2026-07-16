@@ -1145,6 +1145,13 @@ test('普通总结主路：先创建末尾空白 y，应用后只把 y 写成无
   assert.equal(deps.roles.get(34), 'assistant');
   assert.equal(session.config.summaryPlaceholderFloor, 34);
   assert.equal(candidate.validation.ok, true);
+  const runtimePrompt = deps.genCalls[0].ordered_prompts[1].content;
+  assert.equal((runtimePrompt.match(/<Historical_Context>/g) ?? []).length, 1);
+  assert.equal((runtimePrompt.match(/<\/Historical_Context>/g) ?? []).length, 1);
+  assert.match(runtimePrompt, /早期相识/);
+  assert.match(runtimePrompt, /层31：两人在雨中见面/);
+  assert.ok(runtimePrompt.indexOf('早期相识') < runtimePrompt.indexOf('层31：两人在雨中见面'));
+  assert.doesNotMatch(runtimePrompt, /<Archive_Context>|<Target_Flux>/);
 
   const appliedFloor = await session.applySummary(candidate);
   assert.equal(appliedFloor, 34);
@@ -1156,14 +1163,14 @@ test('普通总结主路：先创建末尾空白 y，应用后只把 y 写成无
 
 test('普通总结调试 raw：保留本次整段输出；手改后表示当前候选全量', async () => {
   const deps = readySummaryScene();
-  const fullOutput = `<inner_flow>先核对 Flux，不属于正式正文。</inner_flow>\n${SUMMARY_RESULT}\n核对完毕。`;
+  const fullOutput = `<thinking>先核对 Flux，不属于正式正文。</thinking>\n${SUMMARY_RESULT}\n核对完毕。`;
   deps.genResult = fullOutput;
   const session = new ArchiverSession(deps, defaultConfig());
   const candidate = await session.generateSummary();
 
   assert.equal(candidate.raw, fullOutput);
   const edited = session.editSummaryCandidate(candidate, candidate.body.replace('完成了一次交谈', '完成了关键交谈'));
-  assert.match(edited.raw, /^<inner_flow>先核对 Flux/);
+  assert.match(edited.raw, /^<thinking>先核对 Flux/);
   assert.match(edited.raw, /完成了关键交谈/);
   assert.match(edited.raw, /核对完毕。$/);
 });

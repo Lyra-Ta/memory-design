@@ -947,8 +947,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       : '';
     const runtimeEdit = summaryExpandMod === 'runtime'
       ? `<div class="modedit"><div class="runtime-summary">
-          <div><b>Archive Context</b> 全部完整 &lt;World_Archive&gt;${archiveFloors.length ? ` · 层 ${archiveFloors.join('、')}` : ' · 无'}</div>
-          <div><b>Target Flux</b> ${x === null ? `最早楼层至当前层 ${q}` : `层 ${x} 之后至当前层 ${q}`}的完整 Flux / Causal_Flux</div>
+          <div><b>Historical Context</b> 以下两类内容按顺序合并进同一个只读上下文</div>
+          <div><b>World Archive</b> 全部完整在场档案${archiveFloors.length ? ` · 层 ${archiveFloors.join('、')}` : ' · 无'}</div>
+          <div><b>捕获 Flux</b> ${x === null ? `最早楼层至当前层 ${q}` : `层 ${x} 之后至当前层 ${q}`}的完整 Flux / Causal_Flux</div>
           <div><b>补充引导</b> 首次可空；失败重试与结果重跑均可手动填写</div>
         </div></div>`
       : '';
