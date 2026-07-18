@@ -1,9 +1,9 @@
 /**
  * 摘要 / Flux -> 普通 World Archive 的独立提示词编排。
  *
- * 固定三段：
+ * 固定三段，全部作为 system 发送：
  *   1. pre     system：审计系统身份与职责；
- *   2. runtime user：本轮冻结的 Historical Context / 可空 Guidance；
+ *   2. runtime system：本轮冻结的 Historical Context / 可空 Guidance；
  *   3. post    system：四阶段审计步骤与正式输出指令。
  *
  * 本模块只装配纯文本 ordered prompts，不依赖 UI、session、角色卡、世界书或酒馆宏。
@@ -30,8 +30,8 @@ export interface SummaryOrchestrationEntry {
 /** 用户只覆盖文案；角色、顺序、槽类型与开关仍由当前内置版决定。 */
 export interface SummaryOrchestrationOverride {
   content: string;
-  /** 开始自定义时所基于的内置文案指纹，用于判断内置版后来是否更新。 */
-  baseHash: string;
+  /** 用户最近确认过的内置文案指纹；不同于当前内置版时提示一次更新。 */
+  acknowledgedBuiltinHash: string;
 }
 
 export type SummaryOrchestrationOverrides = Partial<
@@ -40,10 +40,6 @@ export type SummaryOrchestrationOverrides = Partial<
 
 export const SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER =
   '{{所有符合条件的信息，也就是所有<World_Archive>以及被抓到的<Flux>}}';
-/** 兼容已经保存的旧 runtime override；新内置模板不再使用。 */
-export const SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER = '{{ARCHIVE_CONTEXT}}';
-/** 兼容已经保存的旧 runtime override；新内置模板不再使用。 */
-export const SUMMARY_TARGET_FLUX_PLACEHOLDER = '{{TARGET_FLUX}}';
 export const SUMMARY_GUIDANCE_PLACEHOLDER = '{{GUIDANCE}}';
 
 const PRE = `你是一个「记忆审计归档系统」。
@@ -57,8 +53,8 @@ ${SUMMARY_GUIDANCE_PLACEHOLDER}`;
 
 const POST = `<Output_Requirements>
 在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
-<thinking>
 
+<thinking>
 [阶段1: 游标校准]
 - **存档查询**：扫描全部<World_Archive>, 梳理归属于Archive的所有因果结。
 - **锚定基准**: 反向扫描最近的 \`</World_Archive>\`，记录其 [事件标题| 锚点 | 起止时间]。
@@ -115,15 +111,13 @@ P2（默认删除）
 
 </Output_Requirements>
 
-现在从思考<thinking>开始：
-
-<thinking>`;
+现在从思考<thinking>开始：`;
 
 /** 返回全新的默认条目，调用方可以安全地局部复制/切换 enabled。 */
 export function defaultSummaryOrchestration(): SummaryOrchestrationEntry[] {
   return [
     { id: 'pre', label: '前置定义', role: 'system', kind: 'static', content: PRE, enabled: true },
-    { id: 'runtime', label: '运行时填入', role: 'user', kind: 'runtime', content: RUNTIME, enabled: true },
+    { id: 'runtime', label: '运行时填入', role: 'system', kind: 'runtime', content: RUNTIME, enabled: true },
     { id: 'post', label: '后置思考与输出', role: 'system', kind: 'static', content: POST, enabled: true },
   ];
 }
@@ -143,7 +137,7 @@ export function makeSummaryOrchestrationOverride(
   content: string,
   baseContent: string,
 ): SummaryOrchestrationOverride {
-  return { content, baseHash: summaryPromptFingerprint(baseContent) };
+  return { content, acknowledgedBuiltinHash: summaryPromptFingerprint(baseContent) };
 }
 
 /** 当前内置结构叠加少量用户文案 override。 */
@@ -174,32 +168,12 @@ function fillRuntime(template: string, input: AssembleSummaryPromptInput): strin
   const historicalContext = [input.archiveContext.trim(), input.targetFlux.trim()]
     .filter(Boolean)
     .join('\n\n');
-  const hasUnifiedPlaceholder = template.includes(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER);
-  const hasLegacyArchivePlaceholder = template.includes(SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER);
-  const hasLegacyFluxPlaceholder = template.includes(SUMMARY_TARGET_FLUX_PLACEHOLDER);
-
-  let content = template;
-  if (hasUnifiedPlaceholder) {
-    content = content.split(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER).join(historicalContext);
-  }
-
-  // 已保存的旧自定义模板仍按两个来源槽分别填充；缺一个时沿用旧行为追加该块。
-  if (hasLegacyArchivePlaceholder || hasLegacyFluxPlaceholder) {
-    content = fillOrAppend(
-      content,
-      SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER,
-      input.archiveContext,
-      `<Archive_Context>\n${input.archiveContext}\n</Archive_Context>`,
-    );
-    content = fillOrAppend(
-      content,
-      SUMMARY_TARGET_FLUX_PLACEHOLDER,
-      input.targetFlux,
-      `<Target_Flux>\n${input.targetFlux}\n</Target_Flux>`,
-    );
-  } else if (!hasUnifiedPlaceholder) {
-    content = `${content.trimEnd()}\n\n<Historical_Context>\n${historicalContext}\n</Historical_Context>`;
-  }
+  let content = fillOrAppend(
+    template,
+    SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER,
+    historicalContext,
+    `<Historical_Context>\n${historicalContext}\n</Historical_Context>`,
+  );
 
   const guidance = input.guidance?.trim() ?? '';
   const guidanceBlock = guidance ? `<Guidance>\n${guidance}\n</Guidance>` : '';
@@ -211,7 +185,7 @@ function fillRuntime(template: string, input: AssembleSummaryPromptInput): strin
   return content.trim();
 }
 
-/** 按条目顺序装配本轮 ordered prompts；默认恰为 system -> user -> system 三段。 */
+/** 按条目顺序装配本轮 ordered prompts；默认三段全部为 system。 */
 export function assembleSummaryPrompt(
   entries: SummaryOrchestrationEntry[],
   input: AssembleSummaryPromptInput,

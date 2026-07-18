@@ -4,6 +4,7 @@
  */
 
 import { loadConfig } from './config';
+import { loadPromptPreferences } from './prompt-preferences';
 import {
   bindChatActivityMonitor,
   type ChatActivityMonitor,
@@ -107,7 +108,8 @@ async function init(): Promise<void> {
   let session: ArchiverSession;
   try {
     session = new ArchiverSession(deps, loadConfig(deps));
-    console.info(TAG, CSS, '会话已建（配置已读）');
+    session.promptPreferences = loadPromptPreferences(deps);
+    console.info(TAG, CSS, '会话已建（chat 配置与 global 提示词偏好已读）');
   } catch (e) {
     console.error('[记忆归档] 建会话失败：', e);
     return;

@@ -31,11 +31,11 @@ export interface OrchestrationEntry {
 
 /**
  * 用户只持久化真正改过的内容；内置提示词本体始终来自当前脚本。
- * baseHash 记录用户开始自定义时所基于的内置版本，用来判断之后是否已有新版。
+ * acknowledgedBuiltinHash 记录用户最近确认过的内置版本，用来判断是否有尚未处理的新版。
  */
 export interface OrchestrationOverride {
   content: string;
-  baseHash: string;
+  acknowledgedBuiltinHash: string;
 }
 
 export type OrchestrationOverrides = Record<string, OrchestrationOverride>;
@@ -173,9 +173,9 @@ const POST = COT;
 export function defaultOrchestration(): OrchestrationEntry[] {
   return [
     { id: 'skeleton', label: '骨架规则（身份 + 结构 + 红线）', role: 'system', kind: 'static', content: SKELETON, enabled: true },
-    { id: 'historical_context', label: 'Historical Context（既存 + 原始）', role: 'user', kind: 'historical_context', content: HISTORICAL, enabled: true },
+    { id: 'historical_context', label: 'Historical Context（既存 + 原始）', role: 'system', kind: 'historical_context', content: HISTORICAL, enabled: true },
     { id: 'note', label: '注意（增量覆写等说明）', role: 'system', kind: 'static', content: NOTE, enabled: true },
-    { id: 'guidance', label: '重roll 引导槽（本段个性化需求）', role: 'user', kind: 'guidance', content: GUIDANCE_BLOCK, enabled: true },
+    { id: 'guidance', label: '重roll 引导槽（本段个性化需求）', role: 'system', kind: 'guidance', content: GUIDANCE_BLOCK, enabled: true },
     { id: 'post', label: '后置提示词', role: 'system', kind: 'static', content: POST, enabled: true },
   ];
 }

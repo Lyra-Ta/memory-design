@@ -146,17 +146,53 @@ const CSS = `
 .wrap .msub .fullbtn{margin-left:auto;}
 .wrap .fullbtn{color:var(--mut);cursor:pointer;font-size:11px;padding:1px 6px;border:1px solid var(--line);border-radius:5px;transition:.14s;flex:0 0 auto;user-select:none;}
 .wrap .fullbtn:hover{color:var(--acc);border-color:var(--acc);}
+.wrap .mod-actions{display:inline-flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;min-width:0;}
 .wrap .ebar .fullbtn{margin-right:auto;}
 .wrap .modedit textarea{width:100%;height:62px;min-height:46px;resize:vertical;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--read);font:inherit;font-size:12px;line-height:1.6;padding:7px 9px;outline:0;}
 .wrap .modedit textarea:focus{border-color:var(--acc);}
 .wrap .runtime-summary{font-size:11px;line-height:1.65;color:var(--mut);background:var(--field);border:1px dashed var(--line);border-radius:7px;padding:7px 9px;}
 .wrap .runtime-summary b{color:var(--read);font-weight:500;}
+.wrap .debug-stack{display:flex;flex-direction:column;gap:8px;}
+.wrap .debug-stack .runtime-summary:not(:first-child){margin-top:8px;}
+.wrap .debug-empty{color:var(--faint);font-style:italic;}
+.wrap .prompt-global-note{font-size:10.5px;color:var(--faint);margin:-4px 2px 10px;line-height:1.6;}
+.wrap .prompt-update-card{margin:8px 0 1px;padding:10px 11px;border:1px solid var(--warn);border-radius:9px;background:var(--warn-soft);}
+.wrap .prompt-update-title{font-size:11.5px;color:var(--warn);font-weight:600;}
+.wrap .prompt-update-copy{font-size:10.5px;color:var(--mut);line-height:1.65;margin-top:3px;}
+.wrap .prompt-update-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px;}
+.wrap .prompt-action{appearance:none;-webkit-appearance:none;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--ink2);font:inherit;font-size:10.5px;line-height:1.25;padding:6px 9px;cursor:pointer;transition:.14s;white-space:normal;text-align:center;}
+.wrap .prompt-action:hover{border-color:var(--acc);color:var(--acc);background:var(--acc-soft);}
+.wrap .prompt-action.keep{border-color:var(--warn);color:var(--warn);}
+.wrap .prompt-action.use{border-color:var(--acc);color:var(--acc);font-weight:600;}
+.wrap .prompt-compare{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px;flex:1 1 auto;min-height:0;overflow:auto;}
+.wrap .compare-intro{font-size:11px;line-height:1.7;color:var(--mut);padding:9px 11px;border-radius:9px;background:var(--warn-soft);border:1px solid var(--warn);}
+.wrap .compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0;flex:1 1 auto;}
+.wrap .compare-pane{display:flex;flex-direction:column;min-width:0;min-height:220px;border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden;}
+.wrap .compare-label{font-size:11px;color:var(--mut);padding:8px 11px;border-bottom:1px solid var(--line);background:var(--bg);}
+.wrap .compare-label b{color:var(--ink);font-weight:600;}
+.wrap .compare-text{padding:12px 13px;white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere;word-break:break-word;color:var(--read);font:12px/1.75 -apple-system,"PingFang SC",sans-serif;flex:1 1 auto;}
+.wrap .compare-footer{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;}
+@media (max-width:640px){
+  .wrap .top>.htitle{flex:1 1 0;}
+  .wrap .top>.htitle~.grow{display:none;}
+  .wrap .daynight .dn{padding:4px 8px;}
+  .wrap .promptsec>.grow{display:none;}
+  .wrap .promptcontrols{width:100%;flex:1 0 100%;justify-content:flex-end;flex-wrap:wrap;}
+  .wrap .promptcontrols .promptnotice{margin-right:auto;}
+  .wrap .mod-actions{width:100%;flex:1 0 100%;padding-top:3px;}
+  .wrap .prompt-update-actions{display:grid;grid-template-columns:1fr;}
+  .wrap .prompt-action{width:100%;padding:8px 9px;}
+  .wrap .compare-grid{grid-template-columns:1fr;}
+  .wrap .compare-pane{min-height:180px;}
+}
 .wrap .headact{font-size:10.5px;color:var(--mut);cursor:pointer;padding:1px 3px;white-space:nowrap;}
 .wrap .headact.saveact{color:var(--acc);font-weight:600;}
 /* 提示词全屏编辑：面板放大、大文本框铺满（用 vh 定高，避开百分比高度链断裂） */
 .wrap .panel.full{width:min(900px,calc(100vw - 32px));height:calc(100vh - 40px);height:calc(100dvh - 40px);max-width:none;max-height:900px;overflow:hidden;}
 .wrap .panel.full [data-el=view]{height:100%;min-height:0;display:flex;flex-direction:column;}
 .wrap .panel.full .top{flex:0 0 auto;}
+.wrap .full-update-slot{padding:10px 18px 0;flex:0 0 auto;}
+.wrap .full-update-slot .prompt-update-card{margin:0;}
 .wrap .fullwrap{padding:14px 18px 18px;flex:1 1 auto;min-height:0;}
 .wrap .fulltext{width:100%;height:100%;resize:none;border:1px solid var(--line);border-radius:10px;background:var(--field);color:var(--read);font:13px/1.85 -apple-system,"PingFang SC",sans-serif;padding:14px 16px;outline:0;}
 .wrap .fulltext:focus{border-color:var(--acc);}
@@ -369,6 +405,25 @@ const CSS = `
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+function renderGenerationDebug(
+  prompts: readonly { role: string; content: string }[],
+  reasoning: string,
+  content: string,
+): string {
+  const promptText = prompts
+    .map((prompt, i) => `[${i + 1}] role=${prompt.role}\n${prompt.content}`)
+    .join('\n\n');
+  const reasoningText = reasoning || '（当前连接或模型未返回独立 reasoning）';
+  return `<div class="debug-stack">
+    <div class="runtime-summary"><b>实际发送的提示词</b></div>
+    <pre class="raw">${esc(promptText)}</pre>
+    <div class="runtime-summary"><b>模型 Reasoning（独立返回）</b></div>
+    <pre class="raw${reasoning ? '' : ' debug-empty'}">${esc(reasoningText)}</pre>
+    <div class="runtime-summary"><b>模型最终正文（原始 content）</b></div>
+    <pre class="raw">${esc(content)}</pre>
+  </div>`;
+}
 function label(title: string, time: string | null): string {
   return esc([title, time].filter(Boolean).join(' | '));
 }
@@ -492,6 +547,31 @@ interface FailedSummaryGeneration {
   message: string;
 }
 
+type PromptScope = 'archive' | 'summary';
+
+interface FullPromptEdit {
+  scope: PromptScope;
+  id: string;
+  label: string;
+  value: string;
+}
+
+interface InlinePromptDraft {
+  scope: PromptScope;
+  id: string;
+  value: string;
+}
+
+interface PromptComparison {
+  scope: PromptScope;
+  id: string;
+  label: string;
+  customContent: string;
+  customIsDraft: boolean;
+  builtinContent: string;
+  returnEdit: FullPromptEdit | null;
+}
+
 interface EvNode {
   floor: number;
   generation: LocatorEntry['generation'];
@@ -535,7 +615,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   let editingIdx: number | null = null; // 正在结构化编辑的容器下标（null = 无）
   let expandMod: 'pre' | 'runtime' | 'post' | null = null;
   let summaryExpandMod: 'pre' | 'runtime' | 'post' | null = null;
-  let fullEdit: { scope: 'archive' | 'summary'; id: string; label: string; value: string } | null = null; // 提示词全屏编辑
+  let fullEdit: FullPromptEdit | null = null; // 提示词全屏编辑
+  let inlinePromptDraft: InlinePromptDraft | null = null; // 查看／确认新版前保住内嵌未保存草稿
+  let promptComparison: PromptComparison | null = null; // 内置新版只读对照
   let showRetired = false; // 时间轴是否显示退役档（默认藏起冷存旧档，去历史杂音）
   let candEditing = false;
   let summaryCandEditing = false;
@@ -590,7 +672,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
 
     const coarsePointer = panelWindow.matchMedia?.('(pointer: coarse)').matches ?? false;
     const mobile = viewport.width <= 640 || (coarsePointer && viewport.height <= 600);
-    const fullDesktop = !!fullEdit && !mobile;
+    const fullDesktop = (!!fullEdit || !!promptComparison) && !mobile;
     const horizontalMargin = mobile ? 12 : fullDesktop ? 16 : viewport.width * 0.03;
     const verticalMargin = mobile ? 44 : fullDesktop ? 20 : viewport.height * 0.03;
     const maxWidth = fullDesktop ? 900 : 480;
@@ -666,6 +748,60 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const start = hi < 0 ? entries.length : hi;
     const end = gi < 0 ? start - 1 : gi;
     return { pre: entries.slice(0, start), runtime: entries.slice(start, end + 1), post: entries.slice(end + 1) };
+  }
+
+  function promptState(scope: PromptScope, id: string) {
+    return scope === 'summary'
+      ? session.summaryOrchestrationState(id as SummaryPromptId)
+      : session.orchestrationState(id);
+  }
+
+  function inlinePromptValue(scope: PromptScope, id: string, fallback: string): string {
+    return inlinePromptDraft?.scope === scope && inlinePromptDraft.id === id
+      ? inlinePromptDraft.value
+      : fallback;
+  }
+
+  /** 捕获当前可见编辑器；只读查看或确认新版都不得吞掉尚未保存的字。 */
+  function capturePromptDraft(scope: PromptScope, id: string): string | null {
+    if (fullEdit?.scope === scope && fullEdit.id === id) {
+      const textarea = shadow.querySelector('[data-el=fulltext]') as HTMLTextAreaElement | null;
+      const value = textarea?.value ?? fullEdit.value;
+      fullEdit = { ...fullEdit, value };
+      return value;
+    }
+
+    const selector = scope === 'summary' ? 'textarea[data-soid]' : 'textarea[data-oid]';
+    const textarea = [...shadow.querySelectorAll<HTMLTextAreaElement>(selector)].find(element =>
+      (scope === 'summary' ? element.dataset.soid : element.dataset.oid) === id,
+    );
+    if (textarea) {
+      inlinePromptDraft = { scope, id, value: textarea.value };
+      return textarea.value;
+    }
+    return inlinePromptDraft?.scope === scope && inlinePromptDraft.id === id
+      ? inlinePromptDraft.value
+      : null;
+  }
+
+  function clearInlinePromptDraft(scope?: PromptScope, id?: string): void {
+    if (!inlinePromptDraft) return;
+    if (scope && inlinePromptDraft.scope !== scope) return;
+    if (id && inlinePromptDraft.id !== id) return;
+    inlinePromptDraft = null;
+  }
+
+  function promptUpdateCard(scope: PromptScope, id: string): string {
+    if (!promptState(scope, id).builtinUpdateAvailable) return '';
+    return `<div class="prompt-update-card">
+      <div class="prompt-update-title">内置提示词已有新版</div>
+      <div class="prompt-update-copy">当前仍使用你的自定义版本。此选择适用于所有聊天；查看不会改变当前内容。</div>
+      <div class="prompt-update-actions">
+        <button type="button" class="prompt-action" data-act="prompt-view-builtin" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">查看内置新版</button>
+        <button type="button" class="prompt-action keep" data-act="prompt-keep-custom" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">继续使用我的版本</button>
+        <button type="button" class="prompt-action use" data-act="prompt-use-builtin" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">使用内置新版</button>
+      </div>
+    </div>`;
   }
 
   /** 当前阈值外可收的原始档，按楼层去重并升序。 */
@@ -825,7 +961,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const promptSummary = session.promptOverrideSummary();
 
     const moduleEdit = (entries: { id: string; content: string }[]) => {
-      return `<div class="modedit">${entries.map(e => `<textarea data-oid="${esc(e.id)}">${esc(e.content)}</textarea>`).join('')}</div>`;
+      return `<div class="modedit">${entries.map(e => `<textarea data-oid="${esc(e.id)}">${esc(inlinePromptValue('archive', e.id, e.content))}</textarea>${promptUpdateCard('archive', e.id)}`).join('')}</div>`;
     };
     const moduleState = (entries: { id: string }[]) => {
       const states = entries.map(entry => session.orchestrationState(entry.id));
@@ -844,10 +980,10 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const moduleActions = (entries: { id: string }[], modKey: 'pre' | 'post') => {
       if (expandMod !== modKey) return `<span class="pen">✎</span>`;
       const first = entries[0];
-      return `${first ? `<span class="fullbtn" data-act="full-open" data-oid="${esc(first.id)}" title="全屏编辑">⛶</span>` : ''}
-        ${first && session.orchestrationState(first.id).customized ? `<span class="headact" data-act="mod-reset" data-oid="${esc(first.id)}">恢复内置最新版</span>` : ''}
+      return `<span class="mod-actions">${first ? `<span class="fullbtn" data-act="full-open" data-oid="${esc(first.id)}" title="全屏编辑">⛶</span>` : ''}
+        ${first && session.orchestrationState(first.id).customized ? `<span class="headact" data-act="mod-reset" data-oid="${esc(first.id)}">使用内置最新版</span>` : ''}
         <span class="headact" data-act="mod-cancel">取消</span>
-        <span class="headact saveact" data-act="mod-save" data-mod="${modKey}">保存</span>`;
+        <span class="headact saveact" data-act="mod-save" data-mod="${modKey}">保存</span></span>`;
     };
     const preEdit = expandMod === 'pre' ? moduleEdit(pre) : '';
     const postEdit = expandMod === 'post' ? moduleEdit(post) : '';
@@ -897,6 +1033,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
               ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ''}<span class="promptreset" data-act="prompt-reset-all">全部使用内置最新版</span></span>`
               : '<span class="promptfollow">自动跟随内置最新版</span>'
           }</div>
+        <div class="prompt-global-note">提示词是插件级设置，保存后适用于所有聊天。</div>
         <div class="mods">
           <div class="mod" data-mod="pre">
             <div class="modhead" data-act="mod-toggle" data-mod="pre"><span class="mt">前置提示词</span>${moduleTags(pre)}<span class="grow"></span>${moduleActions(pre, 'pre')}</div>
@@ -942,13 +1079,13 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     const moduleActions = (entry: typeof pre, modKey: 'pre' | 'post') => {
       if (summaryExpandMod !== modKey) return '<span class="pen">✎</span>';
       const state = session.summaryOrchestrationState(entry.id);
-      return `<span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
-        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">恢复内置最新版</span>` : ''}
+      return `<span class="mod-actions"><span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
+        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">使用内置最新版</span>` : ''}
         <span class="headact" data-act="summary-mod-cancel">取消</span>
-        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span>`;
+        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span></span>`;
     };
     const moduleEdit = (entry: typeof pre) => summaryExpandMod === entry.id
-      ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(entry.content)}</textarea></div>`
+      ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(inlinePromptValue('summary', entry.id, entry.content))}</textarea>${promptUpdateCard('summary', entry.id)}</div>`
       : '';
     const runtimeEdit = summaryExpandMod === 'runtime'
       ? `<div class="modedit"><div class="runtime-summary">
@@ -982,6 +1119,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
             ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ''}<span class="promptreset" data-act="summary-prompt-reset-all">全部使用内置最新版</span></span>`
             : '<span class="promptfollow">自动跟随内置最新版</span>'}
         </div>
+        <div class="prompt-global-note">提示词是插件级设置，保存后适用于所有聊天。</div>
         <div class="mods">
           <div class="mod" data-summary-mod="pre">
             <div class="modhead" data-act="summary-mod-toggle" data-mod="pre"><span class="mt">${esc(pre.label)}</span>${moduleTags('pre')}<span class="grow"></span>${moduleActions(pre, 'pre')}</div>
@@ -1157,7 +1295,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       docHtml = `<textarea class="editdoc" data-el="editdoc">${esc(c.body)}</textarea>
         <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="edit-cancel">取消</span><span class="savem" data-act="edit-save">应用改动</span></div>`;
     } else if (mode === 'debug') {
-      docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+      docHtml = renderGenerationDebug(c.prompts, c.reasoning, c.raw);
     } else {
       docHtml = `<div class="doc" data-act="edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
     }
@@ -1219,7 +1357,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       docHtml = `<textarea class="editdoc" data-el="summary-editdoc">${esc(c.body)}</textarea>
         <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="summary-edit-cancel">取消</span><span class="savem" data-act="summary-edit-save">应用改动</span></div>`;
     } else if (summaryMode === 'debug') {
-      docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+      docHtml = renderGenerationDebug(c.prompts, c.reasoning, c.raw);
     } else {
       docHtml = `<div class="doc" data-act="summary-edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
     }
@@ -1380,15 +1518,32 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
   /** 提示词全屏编辑器（面板放大、大文本框铺满） */
   function renderFullEdit(): string {
     const fe = fullEdit!;
-    const state = fe.scope === 'summary'
-      ? session.summaryOrchestrationState(fe.id as SummaryPromptId)
-      : session.orchestrationState(fe.id);
+    const state = promptState(fe.scope, fe.id);
     const status = state.customized
       ? `<span class="prompttag custom">自定义</span>${state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ''}`
       : '<span class="prompttag">跟随内置</span>';
     return `
-      <div class="top"><span class="back" data-act="full-cancel" title="退出全屏">‹</span><span class="htitle">${esc(fe.label)}</span>${status}<span class="grow"></span>${state.customized ? '<span class="headact" data-act="full-reset">恢复内置最新版</span>' : ''}${dnToggle()}<span class="savem" data-act="full-save">保存</span></div>
+      <div class="top"><span class="back" data-act="full-cancel" title="退出全屏">‹</span><span class="htitle">${esc(fe.label)}</span>${status}<span class="grow"></span>${state.customized ? '<span class="headact" data-act="full-reset">使用内置最新版</span>' : ''}${dnToggle()}<span class="savem" data-act="full-save">保存</span></div>
+      ${state.builtinUpdateAvailable ? `<div class="full-update-slot">${promptUpdateCard(fe.scope, fe.id)}</div>` : ''}
       <div class="fullwrap"><textarea class="fulltext" data-el="fulltext" spellcheck="false">${esc(fe.value)}</textarea></div>`;
+  }
+
+  function renderPromptComparison(): string {
+    const comparison = promptComparison!;
+    return `
+      <div class="top"><span class="back" data-act="prompt-compare-back" title="返回">‹</span><span class="htitle">${esc(comparison.label)} · 查看内置新版</span><span class="grow"></span>${dnToggle()}</div>
+      <div class="prompt-compare">
+        <div class="compare-intro">这里只读对照，不会改动你的自定义提示词。选择“继续使用我的版本”后，本次新版提示会在所有聊天中消失。</div>
+        <div class="compare-grid">
+          <section class="compare-pane"><div class="compare-label"><b>我的自定义版本</b> · ${comparison.customIsDraft ? '当前未保存草稿' : '当前实际使用'}</div><pre class="compare-text">${esc(comparison.customContent)}</pre></section>
+          <section class="compare-pane"><div class="compare-label"><b>内置新版</b> · 插件当前版本</div><pre class="compare-text">${esc(comparison.builtinContent)}</pre></section>
+        </div>
+        <div class="compare-footer">
+          <button type="button" class="prompt-action" data-act="prompt-compare-back">暂不处理</button>
+          <button type="button" class="prompt-action keep" data-act="prompt-keep-custom" data-prompt-scope="${comparison.scope}" data-prompt-id="${esc(comparison.id)}">继续使用我的版本</button>
+          <button type="button" class="prompt-action use" data-act="prompt-use-builtin" data-prompt-scope="${comparison.scope}" data-prompt-id="${esc(comparison.id)}">使用内置新版</button>
+        </div>
+      </div>`;
   }
 
   function render() {
@@ -1406,6 +1561,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       }
       view = 'integrity';
       fullEdit = null;
+      promptComparison = null;
       expandMod = null;
       summaryExpandMod = null;
       editingIdx = null;
@@ -1417,9 +1573,18 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     if (view === 'result' && !cand) view = 'hub';
     if (view === 'summary-result' && !summaryCand) view = 'summary-setup';
     if (view === 'detail' && detailStart == null) view = 'timeline';
-    const surface = fullEdit ? 'full-edit' : view;
+    const surface = promptComparison ? 'prompt-comparison' : fullEdit ? 'full-edit' : view;
     const surfaceChanged = surface !== renderedSurface;
 
+    if (promptComparison) {
+      panelEl.classList.add('full');
+      panelEl.classList.remove('result');
+      viewEl().innerHTML = renderPromptComparison();
+      if (surfaceChanged) panelEl.scrollTop = 0;
+      renderedSurface = surface;
+      layoutPanel();
+      return;
+    }
     if (fullEdit) {
       panelEl.classList.add('full');
       panelEl.classList.remove('result');
@@ -1838,6 +2003,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       const ta = el as HTMLTextAreaElement;
       session.setOrchestrationOverride(ta.dataset.oid!, ta.value);
     });
+    clearInlinePromptDraft('archive');
     expandMod = null;
     flash = `${which === 'pre' ? '前置' : '后置'}提示词已保存 ✓`;
     render();
@@ -1854,6 +2020,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
       const textarea = element as HTMLTextAreaElement;
       session.setSummaryOrchestrationOverride(textarea.dataset.soid as SummaryPromptId, textarea.value);
     });
+    clearInlinePromptDraft('summary');
     summaryExpandMod = null;
     flash = `${which === 'pre' ? '前置定义' : '后置思考与输出'}已保存 ✓`;
     render();
@@ -1863,6 +2030,61 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         if (view === 'summary-setup') render();
       }
     }, 1600);
+  }
+
+  function openPromptComparison(scope: PromptScope, id: string): void {
+    const builtin = scope === 'summary'
+      ? session.builtinSummaryOrchestrationEntry(id as SummaryPromptId)
+      : session.builtinOrchestrationEntry(id);
+    const effective = scope === 'summary'
+      ? session.summaryOrchestrationEntries().find(entry => entry.id === id)
+      : session.orchestrationEntries().find(entry => entry.id === id);
+    if (!builtin || !effective) return;
+
+    const capturedDraft = capturePromptDraft(scope, id);
+    const returnEdit = fullEdit?.scope === scope && fullEdit.id === id ? { ...fullEdit } : null;
+    const customContent = capturedDraft ?? effective.content;
+    promptComparison = {
+      scope,
+      id,
+      label: effective.label,
+      customContent,
+      customIsDraft: capturedDraft !== null && capturedDraft !== effective.content,
+      builtinContent: builtin.content,
+      returnEdit,
+    };
+    fullEdit = null;
+    render();
+  }
+
+  function acknowledgePromptUpdate(scope: PromptScope, id: string): void {
+    if (!promptComparison) capturePromptDraft(scope, id);
+    if (scope === 'summary') session.acknowledgeSummaryOrchestrationBuiltin(id as SummaryPromptId);
+    else session.acknowledgeOrchestrationBuiltin(id);
+    const returnEdit = promptComparison?.returnEdit ?? null;
+    promptComparison = null;
+    if (returnEdit) fullEdit = returnEdit;
+    flash = '已继续使用自定义版本；本次新版已确认 ✓';
+    render();
+  }
+
+  function useBuiltinPrompt(scope: PromptScope, id: string): void {
+    if (scope === 'summary') session.resetSummaryOrchestrationOverride(id as SummaryPromptId);
+    else session.resetOrchestrationOverride(id);
+    promptComparison = null;
+    fullEdit = null;
+    clearInlinePromptDraft(scope, id);
+    if (scope === 'summary') summaryExpandMod = null;
+    else expandMod = null;
+    flash = '已切换为内置最新版 ✓';
+    render();
+  }
+
+  function closePromptComparison(): void {
+    const returnEdit = promptComparison?.returnEdit ?? null;
+    promptComparison = null;
+    fullEdit = returnEdit;
+    render();
   }
 
   // ---- 事件委托 ------------------------------------------------------------
@@ -1966,6 +2188,8 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         view = 'hub';
         flash = '';
         expandMod = null;
+        summaryExpandMod = null;
+        clearInlinePromptDraft();
         editingIdx = null;
         doRefresh();
         render();
@@ -2007,6 +2231,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
           `.modedit textarea[${scope === 'summary' ? 'data-soid' : 'data-oid'}="${oid}"]`,
         ) as HTMLTextAreaElement | null;
         fullEdit = { scope, id: oid, label: entry?.label ?? '提示词', value: ta?.value ?? entry?.content ?? '' };
+        clearInlinePromptDraft(scope, oid);
         flash = '';
         render();
         break;
@@ -2020,6 +2245,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
             session.setOrchestrationOverride(fullEdit.id, ta.value);
           }
         }
+        if (fullEdit) clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
         fullEdit = null;
         flash = '提示词已保存 ✓';
         render();
@@ -2032,15 +2258,38 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
           } else {
             session.resetOrchestrationOverride(fullEdit.id);
           }
+          clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
         }
         fullEdit = null;
         flash = '已恢复内置最新版 ✓';
         render();
         break;
       case 'full-cancel':
+        if (fullEdit) clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
         fullEdit = null;
         flash = '';
         render();
+        break;
+      case 'prompt-view-builtin':
+        openPromptComparison(
+          el!.dataset.promptScope === 'summary' ? 'summary' : 'archive',
+          el!.dataset.promptId!,
+        );
+        break;
+      case 'prompt-keep-custom':
+        acknowledgePromptUpdate(
+          el!.dataset.promptScope === 'summary' ? 'summary' : 'archive',
+          el!.dataset.promptId!,
+        );
+        break;
+      case 'prompt-use-builtin':
+        useBuiltinPrompt(
+          el!.dataset.promptScope === 'summary' ? 'summary' : 'archive',
+          el!.dataset.promptId!,
+        );
+        break;
+      case 'prompt-compare-back':
+        closePromptComparison();
         break;
       case 'cedit-save':
         void saveContainerEdit();
@@ -2082,6 +2331,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         view = 'setup';
         flash = '';
         expandMod = null;
+        clearInlinePromptDraft();
         doRefresh();
         resetRangeSelection();
         render();
@@ -2090,6 +2340,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         view = 'summary-setup';
         flash = '';
         summaryExpandMod = null;
+        clearInlinePromptDraft();
         doRefresh();
         render();
         break;
@@ -2163,15 +2414,18 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'mod-toggle': {
         const m = el!.dataset.mod as 'pre' | 'runtime' | 'post';
+        clearInlinePromptDraft('archive');
         expandMod = expandMod === m ? null : m;
         render();
         break;
       }
       case 'mod-cancel':
+        clearInlinePromptDraft('archive');
         expandMod = null;
         render();
         break;
       case 'mod-reset':
+        clearInlinePromptDraft('archive', el!.dataset.oid!);
         session.resetOrchestrationOverride(el!.dataset.oid!);
         flash = '已恢复内置最新版 ✓';
         render();
@@ -2181,6 +2435,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'prompt-reset-all':
         session.resetAllOrchestrationOverrides();
+        clearInlinePromptDraft('archive');
         expandMod = null;
         fullEdit = null;
         flash = '已全部使用内置最新版 ✓';
@@ -2188,15 +2443,18 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'summary-mod-toggle': {
         const mod = el!.dataset.mod as 'pre' | 'runtime' | 'post';
+        clearInlinePromptDraft('summary');
         summaryExpandMod = summaryExpandMod === mod ? null : mod;
         render();
         break;
       }
       case 'summary-mod-cancel':
+        clearInlinePromptDraft('summary');
         summaryExpandMod = null;
         render();
         break;
       case 'summary-mod-reset':
+        clearInlinePromptDraft('summary', el!.dataset.oid!);
         session.resetSummaryOrchestrationOverride(el!.dataset.oid as SummaryPromptId);
         flash = '已恢复内置最新版 ✓';
         render();
@@ -2206,6 +2464,7 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
         break;
       case 'summary-prompt-reset-all':
         session.resetAllSummaryOrchestrationOverrides();
+        clearInlinePromptDraft('summary');
         summaryExpandMod = null;
         fullEdit = null;
         flash = '已全部使用内置最新版 ✓';
@@ -2434,6 +2693,8 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     expandMod = null;
     summaryExpandMod = null;
     fullEdit = null;
+    inlinePromptDraft = null;
+    promptComparison = null;
     rangeThrough = null;
     flash = '';
     doRefresh();
@@ -2450,6 +2711,9 @@ export function createPanel(session: ArchiverSession, doc: Document = document) 
     activeSummaryGenerationAttempt = null;
     failedSummaryGeneration = null;
     root.style.display = 'none';
+    inlinePromptDraft = null;
+    promptComparison = null;
+    fullEdit = null;
     session.cancel();
     session.discard();
     session.discardSummary();

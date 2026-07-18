@@ -35,12 +35,13 @@ import 'https://cdn.jsdelivr.net/gh/Lyra-Ta/memory-design@main/dist/index.js';
 | `src/plugin/chat-events.ts` | 聊天事件观察器：sent/received 合并读 q，delete/update/swipe 合并扫描，切聊天同步失效旧状态及统一解绑 | 两套总结共用基础层 |
 | `src/plugin/regex-window.ts` | 只由同一快照的 q / x 计算正则深度分区；十层分桶且保证不裁掉未总结 Flux | 《摘要转总结_触发与占位》§8.1 |
 | `src/plugin/regex-controller.ts` | 把 W 串行同步到此间小镇当前预设的两条固定 UUID 正则；同桶不重复写，只改 depth、不改 enabled | 《摘要转总结_触发与占位》§8.1 |
-| `src/plugin/config.ts` | 配置模型 + chat 作用域持久化 + 全局默认种子；两个总结任务分别保存 Connection Profile ID；提示词只存用户 override | 功能规格 §6 配置种子 |
+| `src/plugin/config.ts` | 非提示词配置模型 + chat 作用域持久化 + 全局默认种子；两个总结任务分别保存 Connection Profile ID | 功能规格 §6 配置种子 |
+| `src/plugin/prompt-preferences.ts` | 插件级全局提示词偏好；只存可编辑静态段的自定义正文与已确认内置版指纹，完全独立于 chat | 提示词版本架构 |
 | `src/plugin/orchestration.ts` | §4 编排表模型 + 内置/override 解析 + `assemblePrompt`→ordered_prompts | 功能规格 §4 |
-| `src/plugin/summary-orchestration.ts` | 摘要→大总结的固定 system/user/system 三段式提示词、统一 `<Historical_Context>`、override 与兼容填槽 | 《摘要转总结_触发与占位》§4.2 |
+| `src/plugin/summary-orchestration.ts` | 摘要→大总结的固定 system/system/system 三段式提示词与统一 `<Historical_Context>` 装配 | 《摘要转总结_触发与占位》§4.2 |
 | `src/plugin/session.ts` | 两套总结共用的单例引擎：时间轴化两段提交＋摘要→大总结的全部完整 `<World_Archive>`/x 后 Flux 冻结、空白 y、同批重试与安全写回；两任务各自冻结自己的连接配置 | 功能规格 §1；摘要转总结文档 |
 | `src/plugin/tavern.ts` + `tavern-globals.d.ts` | `createTavernDeps`：把酒馆助手运行时全局包成 `TavernDeps`（唯一碰全局处） | — |
-| `src/plugin/ui.ts` | 原生 Shadow DOM 面板：hub、时间轴、两套总结的设置/生成/重试/结果页、结构化编辑、双任务独立 API 配置、完整性回退与提交事务日志 | 视觉稿 + 摘要转总结文档 |
+| `src/plugin/ui.ts` | 原生 Shadow DOM 面板：hub、时间轴、两套总结的设置/生成/重试/结果页、提示词新版对照与三种处理动作、结构化编辑、双任务独立 API 配置、完整性回退与提交事务日志 | 视觉稿 + 摘要转总结文档 |
 | `src/plugin/index.ts` + `reminder.ts` | 脚本入口：注册按钮、共享 q/x 聊天事件、时间轴 2N/+50 与普通总结 S 轻提醒、切聊天重载、`pagehide` 清理 | 两套总结共用入口 |
 
 ## 承重支点（落地时别改坏）
@@ -49,7 +50,7 @@ import 'https://cdn.jsdelivr.net/gh/Lyra-Ta/memory-design@main/dist/index.js';
 - **校验只查结构不查语义**：`validateArchive` 只认 token 在不在 / 闭没闭合 / 空没空。时间粒度、总结质量一律不碰。
 - **假阳性守卫**：中文书名号《…》出现在正文/摘录里**不会**被误判成半个容器 token（只认行首起且不闭合的）。有单测钉死。
 - **两段提交顺序化 + 可续跑**：每步写入前先核对楼层快照，落盘后再读回校验；任何一步没过就停在 pending 断点并封锁新事务。每个校验成功的步骤同步写入 chat 薄日志（`commit-log.ts`）；「提交事务日志」页据此显示 pending 已写 / 哪些层已 old / 既存末容器是否已接管 / 哪一层已转正，并可**一键继续未完成提交**（`session.resumeCommit` 依现场幂等补完剩余退旧·覆写·转正）。旧版无日志 pending 不猜。
-- **提示词默认与覆盖分离**：内置提示词只来自当前脚本；chat/global 变量仅保存真正改过的模块及其基线指纹。远程更新后，未自定义用户自动跟随最新版，自定义用户可见“内置有新版”并一键恢复。
+- **提示词默认与覆盖分离**：内置提示词只来自当前脚本；自定义正文与已确认内置版指纹只存于独立的插件级 global 键，不写入 chat、不随聊天切换。远程更新后，未自定义用户自动跟随最新版；自定义用户可只读查看新版、继续使用自己的版本，或切回内置新版。
 - **q 与表必须同快照**：全插件只由 `ChatStateReader.syncHead` 读 q；热快照同时携带缓存 x 与由 q/x 算出的正则窗口；`collect` 只消费已传入的 `{table,currentFloor}`，不能把 A 时刻的表与 B 时刻的 q 混用。完整表不按 q 缓存，因为 q 不变时正文仍可编辑；正文一旦 dirty，扫描完成前先把 x 当未知并保守扩窗，绝不用可能失效的旧 x 裁 Flux。
 - **真切聊天立即作废旧操作**：共享读取层另维护只在真正切聊天时递增的 `chatEpoch`。两套候选、普通总结轮次与两段提交冻结该世代；每次异步写入及提交步骤前后复核，切换发生后立即停下，绝不把旧候选继续写进新聊天。
 - **普通总结的来源与写位分离**：生成前直接扫描存储原文，运行时给模型「所有完整 `<World_Archive>` ＋ x 后截至 sourceThrough 的完整 Flux」；两者都是只读输入，角色卡、世界书和日常聊天不作事实源。候选只在 y 仍是空白 assistant 时写入，失败/取消/超时/重 roll 保持同一批来源、y、连接与提示词版本，只允许更改 Guidance。
