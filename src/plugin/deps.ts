@@ -34,6 +34,20 @@ export interface GenerateRawArgs {
   connection_profile_id?: string;
 }
 
+/**
+ * 模型一次独立生成的可观测结果。
+ *
+ * content 是用于校验、编辑和保存的最终正文；reasoning 是后端另行返回的
+ * 推理字段。两者必须分开保存，不能把 reasoning 拼回正文冒充预填充输出。
+ */
+export interface GeneratedResponse {
+  content: string;
+  reasoning: string;
+}
+
+/** 旧版酒馆助手只返回 string；适配层和 mock 可渐进返回完整结构。 */
+export type GenerateRawResult = string | GeneratedResponse;
+
 /** 变量作用域（本插件只用 chat 存配置、global 存种子） */
 export type VarScope = { type: 'chat' | 'global' } | { type: 'script'; script_id?: string };
 
@@ -102,7 +116,7 @@ export interface ArchiverTavernDeps {
   /** 当前最高楼层号 */
   getLastMessageId(): number;
   /** 单次独立调用生成候选档 */
-  generateRaw(config: GenerateRawArgs): Promise<string>;
+  generateRaw(config: GenerateRawArgs): Promise<GenerateRawResult>;
   /** 按 id 取消某次生成 */
   stopGenerationById(generation_id: string): boolean;
   /** 取消所有生成 */

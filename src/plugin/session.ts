@@ -50,6 +50,13 @@ import {
 } from '../core';
 import { saveConfig, saveGlobalDefault, type ArchiverConfig } from './config';
 import {
+  EDITABLE_SUMMARY_PROMPT_IDS,
+  EDITABLE_TIMELINE_PROMPT_IDS,
+  defaultPromptPreferences,
+  savePromptPreferences,
+  type PromptPreferences,
+} from './prompt-preferences';
+import {
   clearCommitLog,
   completeCommitLog,
   createCommitLog,
@@ -59,7 +66,7 @@ import {
   saveCommitLog,
   type CommitLog,
 } from './commit-log';
-import type { ArchiverTavernDeps, TavernMessage } from './deps';
+import type { ArchiverTavernDeps, GenerateRawResult, RolePrompt, TavernMessage } from './deps';
 import {
   assemblePrompt,
   defaultOrchestration,
@@ -75,6 +82,7 @@ import {
   summaryPromptFingerprint,
   type SummaryOrchestrationEntry,
   type SummaryPromptId,
+  type SummaryRolePrompt,
 } from './summary-orchestration';
 import { ChatStateReader, type ChatReadSnapshot } from './chat-state';
 import type { RegexDepthWindow } from './regex-window';
@@ -84,6 +92,8 @@ export type Phase = 'idle' | 'generating' | 'preview' | 'committing';
 
 /** 单次归档生成的硬超时；超时后主动停止并释放单例锁。 */
 export const GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
+const EDITABLE_TIMELINE_PROMPT_ID_SET = new Set<string>(EDITABLE_TIMELINE_PROMPT_IDS);
+const EDITABLE_SUMMARY_PROMPT_ID_SET = new Set<SummaryPromptId>(EDITABLE_SUMMARY_PROMPT_IDS);
 
 /** 用户主动取消；UI 可用 instanceof 将它与真正的 API 失败区分。 */
 export class GenerationCancelledError extends Error {
@@ -177,8 +187,12 @@ export interface CollectionSnapshot {
 
 /** 内存里的候选档（未点确认前零副作用） */
 export interface Candidate {
-  /** 模型原始整段输出（含 thinking）——调试模式/全部输出看这个 */
+  /** 模型最终正文的原始整段 content（可能含模型写在正文里的 thinking 标签）。 */
   raw: string;
+  /** 后端独立返回的 reasoning；不拼进正文，也不参与校验或保存。 */
+  reasoning: string;
+  /** 本次实际交给 generateRaw 的完整提示词，供调试模式核对。 */
+  prompts: RolePrompt[];
   /** 抽出的 <World_Archive> 正文（tag-free）——档案模式看/手改这个 */
   body: string;
   /** 结构校验结果（硬错拦保存 / 软疑给建议） */
@@ -250,6 +264,10 @@ export interface SummaryCollected {
 /** 普通总结候选：只待写入空白 y，不带覆盖 marker。 */
 export interface SummaryCandidate {
   raw: string;
+  /** 后端独立返回的 reasoning；只供调试查看。 */
+  reasoning: string;
+  /** 本次实际交给 generateRaw 的完整提示词，供调试模式核对。 */
+  prompts: SummaryRolePrompt[];
   body: string;
   validation: SummaryArchiveValidationResult;
   containers: Container[];
@@ -258,6 +276,12 @@ export interface SummaryCandidate {
   guidance: string;
   sourceChars: number;
   round: SummaryRound;
+}
+
+function splitGeneratedResponse(result: GenerateRawResult): { content: string; reasoning: string } {
+  return typeof result === 'string'
+    ? { content: result, reasoning: '' }
+    : { content: result.content, reasoning: result.reasoning };
 }
 
 export class ArchiverSession {
@@ -270,6 +294,8 @@ export class ArchiverSession {
   private summaryRound: SummaryRound | null = null;
   /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
   readonly chatState: ChatStateReader;
+  /** 插件级提示词偏好；只写 global，不随 chat 切换。 */
+  public promptPreferences: PromptPreferences = defaultPromptPreferences();
 
   get phase(): Phase {
     return this.currentPhase;
@@ -512,7 +538,8 @@ export class ArchiverSession {
     );
     const archiveContext = archives.length
       ? archives
-          .map(entry => `【在场档案 · 层 ${entry.messageId}】\n${wrapArchive(stripComments(entry.content), 'live')}`)
+          // 楼层只进入 archiveFloors 做内部溯源，不作为提示词文本发送给模型。
+          .map(entry => wrapArchive(stripComments(entry.content), 'live'))
           .join('\n\n')
       : '（无既存 World Archive）';
     const fluxes = collectTargetFlux(
@@ -520,9 +547,8 @@ export class ArchiverSession {
       read.latestLiveArchiveFloor,
       read.currentFloor,
     ).filter(flux => flux.inner.trim().length > 0);
-    const targetFlux = fluxes
-      .map(flux => `【原始摘要 · 层 ${flux.floor}】\n${flux.raw}`)
-      .join('\n\n');
+    // 楼层仍保存在 fluxes / fluxFloors 中用于 UI 溯源；模型只需要原始标签块本身。
+    const targetFlux = fluxes.map(flux => flux.raw).join('\n\n');
     return {
       archiveContext,
       targetFlux,
@@ -627,21 +653,28 @@ export class ArchiverSession {
     const generationId = `${round.id}-${++this.generationSequence}`;
     const op = this.beginGeneration(generationId, fallbackPhase);
     try {
-      const raw = await Promise.race([
+      const prompts = assembleSummaryPrompt(round.orchestration, {
+        archiveContext: round.archiveContext,
+        targetFlux: round.targetFlux,
+        guidance,
+      });
+      const generated = splitGeneratedResponse(await Promise.race([
         this.deps.generateRaw({
-          ordered_prompts: assembleSummaryPrompt(round.orchestration, {
-            archiveContext: round.archiveContext,
-            targetFlux: round.targetFlux,
-            guidance,
-          }),
+          ordered_prompts: prompts,
           generation_id: generationId,
           connection_profile_id: round.connectionProfileId ?? undefined,
         }),
         op.abortPromise,
-      ]);
+      ]));
       if (this.activeGeneration !== op) throw new GenerationCancelledError();
       this.assertCurrentChat(round.chatEpoch);
-      const candidate = this.toSummaryCandidate(raw, round, guidance);
+      const candidate = this.toSummaryCandidate(
+        generated.content,
+        generated.reasoning,
+        round,
+        guidance,
+        prompts,
+      );
       this.releaseGeneration(op, 'preview');
       return candidate;
     } catch (error) {
@@ -650,10 +683,18 @@ export class ArchiverSession {
     }
   }
 
-  private toSummaryCandidate(raw: string, round: SummaryRound, guidance: string): SummaryCandidate {
+  private toSummaryCandidate(
+    raw: string,
+    reasoning: string,
+    round: SummaryRound,
+    guidance: string,
+    prompts: SummaryRolePrompt[],
+  ): SummaryCandidate {
     const validation = validateSummaryArchive(raw);
     return {
       raw,
+      reasoning,
+      prompts,
       body: validation.block?.inner ?? '',
       validation,
       containers: validation.nodes,
@@ -671,7 +712,7 @@ export class ArchiverSession {
     const raw = oldBlock
       ? cand.raw.slice(0, oldBlock.span[0]) + wrapped + cand.raw.slice(oldBlock.span[1])
       : wrapped;
-    return this.toSummaryCandidate(raw, cand.round, cand.guidance);
+    return this.toSummaryCandidate(raw, cand.reasoning, cand.round, cand.guidance, cand.prompts);
   }
 
   /** 只有 y 仍是空白 assistant 才写入；正文变化时宁可失败也绝不覆盖。 */
@@ -806,18 +847,27 @@ export class ArchiverSession {
     const op = this.beginGeneration(generationId, fallbackPhase);
     try {
       const prompts = assemblePrompt(this.orchestrationEntries(), { historicalContext, guidance });
-      const raw = await Promise.race([
+      const generated = splitGeneratedResponse(await Promise.race([
         this.deps.generateRaw({
           ordered_prompts: prompts,
           generation_id: generationId,
           connection_profile_id: this.config.timelineConnectionProfileId ?? undefined,
         }),
         op.abortPromise,
-      ]);
+      ]));
       // cancel/timeout 会先摘掉 op；防御性拦住任何异常的晚返回。
       if (this.activeGeneration !== op) throw new GenerationCancelledError();
       this.assertCurrentChat(chatEpoch);
-      const cand = this.toCandidate(raw, through, guidance, selection, sourceChars, provenance);
+      const cand = this.toCandidate(
+        generated.content,
+        generated.reasoning,
+        prompts,
+        through,
+        guidance,
+        selection,
+        sourceChars,
+        provenance,
+      );
       this.releaseGeneration(op, 'preview');
       return cand;
     } catch (err) {
@@ -829,6 +879,8 @@ export class ArchiverSession {
 
   private toCandidate(
     raw: string,
+    reasoning: string,
+    prompts: RolePrompt[],
     through: number,
     guidance: string,
     selection: number[] | undefined,
@@ -839,6 +891,8 @@ export class ArchiverSession {
     const body = validation.block?.inner ?? '';
     return {
       raw,
+      reasoning,
+      prompts,
       body,
       validation,
       containers: validation.containers,
@@ -946,6 +1000,8 @@ export class ArchiverSession {
     if (!repaired.changed) return { candidate: cand, fixes: [] };
     const next = this.toCandidate(
       repaired.text,
+      cand.reasoning,
+      cand.prompts,
       cand.through,
       cand.guidance,
       cand.selection,
@@ -1074,59 +1130,75 @@ export class ArchiverSession {
     return this.deps.getConnectionProfiles();
   }
 
-  /** 当前脚本内置提示词叠加 chat override 后的有效编排。 */
+  /** 当前脚本内置提示词叠加插件级 global override 后的有效编排。 */
   orchestrationEntries(): OrchestrationEntry[] {
-    return resolveOrchestration(this.config.orchestrationOverrides);
+    return resolveOrchestration(this.promptPreferences.timelineOverrides);
+  }
+
+  builtinOrchestrationEntry(id: string): OrchestrationEntry | undefined {
+    return defaultOrchestration().find(entry => entry.id === id);
   }
 
   /** 单模块是否自定义，以及它所基于的内置版之后是否已变化。 */
   orchestrationState(id: string): { customized: boolean; builtinUpdateAvailable: boolean } {
-    const override = this.config.orchestrationOverrides[id];
+    const override = this.promptPreferences.timelineOverrides[id];
     if (!override) return { customized: false, builtinUpdateAvailable: false };
     const builtin = defaultOrchestration().find(entry => entry.id === id);
     return {
       customized: true,
-      builtinUpdateAvailable: !!builtin && override.baseHash !== promptFingerprint(builtin.content),
+      builtinUpdateAvailable:
+        !!builtin && override.acknowledgedBuiltinHash !== promptFingerprint(builtin.content),
     };
   }
 
   promptOverrideSummary(): { customized: number; updates: number } {
-    const ids = Object.keys(this.config.orchestrationOverrides);
+    const ids = Object.keys(this.promptPreferences.timelineOverrides);
     return {
       customized: ids.length,
       updates: ids.filter(id => this.orchestrationState(id).builtinUpdateAvailable).length,
     };
   }
 
-  /** 保存一条用户覆盖；内容等于当前内置版时自动删除覆盖。 */
+  private persistPromptPreferences(): void {
+    savePromptPreferences(this.deps, this.promptPreferences);
+  }
+
+  /** 保存一条全局用户覆盖；保存本身视为已确认当前内置版本。 */
   setOrchestrationOverride(id: string, content: string): void {
+    if (!EDITABLE_TIMELINE_PROMPT_ID_SET.has(id)) return;
     const builtin = defaultOrchestration().find(entry => entry.id === id);
     if (!builtin) return;
     if (content === builtin.content) {
-      delete this.config.orchestrationOverrides[id];
-      this.persistUserSetting();
+      delete this.promptPreferences.timelineOverrides[id];
+      this.persistPromptPreferences();
       return;
     }
-
-    const existing = this.config.orchestrationOverrides[id];
-    this.config.orchestrationOverrides[id] = {
+    this.promptPreferences.timelineOverrides[id] = {
       content,
-      // 只要仍在编辑同一覆盖项，就不能假装用户已经吸收了后来出现的内置新版。
-      baseHash: existing?.baseHash ?? promptFingerprint(builtin.content),
+      acknowledgedBuiltinHash: promptFingerprint(builtin.content),
     };
-    this.persistUserSetting();
+    this.persistPromptPreferences();
+  }
+
+  /** 保留自定义正文，只确认已看过当前内置版本。 */
+  acknowledgeOrchestrationBuiltin(id: string): void {
+    const override = this.promptPreferences.timelineOverrides[id];
+    const builtin = defaultOrchestration().find(entry => entry.id === id);
+    if (!override || !builtin) return;
+    override.acknowledgedBuiltinHash = promptFingerprint(builtin.content);
+    this.persistPromptPreferences();
   }
 
   resetOrchestrationOverride(id: string): void {
-    if (!(id in this.config.orchestrationOverrides)) return;
-    delete this.config.orchestrationOverrides[id];
-    this.persistUserSetting();
+    if (!(id in this.promptPreferences.timelineOverrides)) return;
+    delete this.promptPreferences.timelineOverrides[id];
+    this.persistPromptPreferences();
   }
 
   resetAllOrchestrationOverrides(): void {
-    if (Object.keys(this.config.orchestrationOverrides).length === 0) return;
-    this.config.orchestrationOverrides = {};
-    this.persistUserSetting();
+    if (Object.keys(this.promptPreferences.timelineOverrides).length === 0) return;
+    this.promptPreferences.timelineOverrides = {};
+    this.persistPromptPreferences();
   }
 
   /** 兼容旧调用名；实际只写 override，不再改/存整份内置编排。 */
@@ -1134,26 +1206,32 @@ export class ArchiverSession {
     this.setOrchestrationOverride(id, content);
   }
 
-  /** 普通总结的固定三段式编排，叠加少量 chat override。 */
+  /** 普通总结的固定三段式编排，叠加插件级 global override。 */
   summaryOrchestrationEntries(): SummaryOrchestrationEntry[] {
-    return resolveSummaryOrchestration(this.config.summaryOrchestrationOverrides);
+    return resolveSummaryOrchestration(this.promptPreferences.summaryOverrides);
+  }
+
+  builtinSummaryOrchestrationEntry(id: SummaryPromptId): SummaryOrchestrationEntry | undefined {
+    return defaultSummaryOrchestration().find(entry => entry.id === id);
   }
 
   summaryOrchestrationState(id: SummaryPromptId): {
     customized: boolean;
     builtinUpdateAvailable: boolean;
   } {
-    const override = this.config.summaryOrchestrationOverrides[id];
+    const override = this.promptPreferences.summaryOverrides[id];
     if (!override) return { customized: false, builtinUpdateAvailable: false };
     const builtin = defaultSummaryOrchestration().find(entry => entry.id === id);
     return {
       customized: true,
-      builtinUpdateAvailable: !!builtin && override.baseHash !== summaryPromptFingerprint(builtin.content),
+      builtinUpdateAvailable:
+        !!builtin &&
+        override.acknowledgedBuiltinHash !== summaryPromptFingerprint(builtin.content),
     };
   }
 
   summaryPromptOverrideSummary(): { customized: number; updates: number } {
-    const ids = Object.keys(this.config.summaryOrchestrationOverrides) as SummaryPromptId[];
+    const ids = Object.keys(this.promptPreferences.summaryOverrides) as SummaryPromptId[];
     return {
       customized: ids.length,
       updates: ids.filter(id => this.summaryOrchestrationState(id).builtinUpdateAvailable).length,
@@ -1161,30 +1239,36 @@ export class ArchiverSession {
   }
 
   setSummaryOrchestrationOverride(id: SummaryPromptId, content: string): void {
+    if (!EDITABLE_SUMMARY_PROMPT_ID_SET.has(id)) return;
     const builtin = defaultSummaryOrchestration().find(entry => entry.id === id);
     if (!builtin) return;
     if (content === builtin.content) {
-      delete this.config.summaryOrchestrationOverrides[id];
-      this.persistUserSetting();
+      delete this.promptPreferences.summaryOverrides[id];
+      this.persistPromptPreferences();
       return;
     }
-    const existing = this.config.summaryOrchestrationOverrides[id];
-    this.config.summaryOrchestrationOverrides[id] = existing
-      ? { content, baseHash: existing.baseHash }
-      : makeSummaryOrchestrationOverride(content, builtin.content);
-    this.persistUserSetting();
+    this.promptPreferences.summaryOverrides[id] = makeSummaryOrchestrationOverride(content, builtin.content);
+    this.persistPromptPreferences();
+  }
+
+  acknowledgeSummaryOrchestrationBuiltin(id: SummaryPromptId): void {
+    const override = this.promptPreferences.summaryOverrides[id];
+    const builtin = defaultSummaryOrchestration().find(entry => entry.id === id);
+    if (!override || !builtin) return;
+    override.acknowledgedBuiltinHash = summaryPromptFingerprint(builtin.content);
+    this.persistPromptPreferences();
   }
 
   resetSummaryOrchestrationOverride(id: SummaryPromptId): void {
-    if (!(id in this.config.summaryOrchestrationOverrides)) return;
-    delete this.config.summaryOrchestrationOverrides[id];
-    this.persistUserSetting();
+    if (!(id in this.promptPreferences.summaryOverrides)) return;
+    delete this.promptPreferences.summaryOverrides[id];
+    this.persistPromptPreferences();
   }
 
   resetAllSummaryOrchestrationOverrides(): void {
-    if (Object.keys(this.config.summaryOrchestrationOverrides).length === 0) return;
-    this.config.summaryOrchestrationOverrides = {};
-    this.persistUserSetting();
+    if (Object.keys(this.promptPreferences.summaryOverrides).length === 0) return;
+    this.promptPreferences.summaryOverrides = {};
+    this.persistPromptPreferences();
   }
 
   // ---- 提交决策 + 两段提交 -------------------------------------------------

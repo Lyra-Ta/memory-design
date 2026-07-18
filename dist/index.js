@@ -53,328 +53,6 @@
     };
   }
 
-  // src/plugin/orchestration.ts
-  var HISTORICAL_PLACEHOLDER = "{{HISTORICAL_CONTEXT}}";
-  var GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
-  var SKELETON = `你是一个「记忆归档器」。把给定的角色扮演原始记录，进一步压缩篇幅，成为一份结构化《世界档案》。以因果为时间轴，仅值得保留的细节以摘录方式存在。
-最终目标：把这份档案当作角色记忆来源。只把真正抓人的瞬间原样留住（留为摘录）；把记忆中大致经历了什么留住（留为片段总结）。绝对禁止任何形式增添细节。
-
-<Basic_Rules>
-用 <World_Archive> … </World_Archive> 包裹整份档案。
-档案按时间顺序排列若干「时间容器」。每个时间容器＝一段时间（比如一整年、一场持续几天的副本、某几天）。
-Legend：《…》为容器标题，[…]为片段标题。// 后内容为生成引导，不是生成格式。
-具体结构如下：
-<World_Archive>
-《容器标题 | 时间段》
-…… // 容器总结：总领本容器内所有片段的概览——这段时间整体上发生了什么
-
-  [片段标题 | 时间范围]
-  …… // 片段总结：按逻辑顺序说明发生了什么，保持因果不断连，前后可推导，人物在场
-  · …… // 摘录：保留原动作/原对话/原意象等
-  [片段标题 | 时间范围]
-  ……
-  · ……
-  · ……
-  // 下一个潜在的片段
-// 下一个潜在的容器
-</World_Archive>
-
-【容器】
-· 容器（大段时间）的断点＝跨年/跨月、进出一个大场景或副本、剧情大阶段切换。容器允许尽可能宏观。
-· 按“故事的自然断点”切，而不是机械按段数/字数切。
-· 无法被归入任何片段的零散时间段，单独成为一个容器，内部不挂载片段。
-
-【片段】
-· 片段覆盖一个「时间范围」（不是时间点）；范围之间可以重叠、可以并列——容器内的片段不必排成一条严格的时间线。
-· 片段只带一个标题和它的时间范围，不打标签、不标注线索。
-· 合法片段类型：
-    · 时间切片：一段连续的场景，占一个不重叠的时段。
-    · 贯穿线：一条零散出现、合起来才成整体的暗线，聚成一个跨度片段，与切片并列。举例，一个 [年度] 容器里可以同时并列：[收集情报 | 全年]、[日常事件1 | 上半年]、[日常事件2 | 下半年]、[复仇| 下半年]，贯穿线（此处的收集情报与复仇）与两段日常在时间上可以重叠或交错。
-    · 共性切片：同一容器中复数次出现的相同场景/相同在场角色/相似互动模式（如 [刷牙洗脸| 时间A-B & C-D]为共性切片、[中午外出| 时间 B-C]为日常切片），可以合并为同一片段。具体差异可下放摘录。
- · 判别贯穿线：某条线每次只零星一两笔，连起来才是完整贯穿线进展 → 聚成一段；每次都自成一场完整的戏 → 各自切片。（举例：暗线、个人发展线、整体局势变化...）
-· 一个具体瞬间的细节只归属一个片段：若某个贯穿线A发生在片段B里，判断它主要发生在哪个场景（片段B中贯穿线A的闪回影响了角色行动），就只具体写进那一片段（此处为B片段），另一侧一笔带过。
-· 片段大致按起始时间排；并列/重叠的用各自时间范围区分，跨度大的贯穿线放前放后都行。
-</Basic_Rules>
-
-<Writing_Guidelines>
-【容器·总结怎么写】
-· 站在整个容器的高度，尽可能按照时间顺序，一段话讲清这段时间「整体上发生了什么」，尤其是三要素：时间、地点、在场人物（只要是出现的人名，配角也不要遗漏，这关系到哪些角色在场知道某些事）。
-· 它是这个容器最顶上的概览：只读它，就能知道这段时间的大致状态与走向，不必逐个看片段。
-· 粗，但不是概括性空话，只讲发生的事实——要能让人跳过下面的片段也不至于断片。
-示例：
-· 这个夏天很热，A（调查员）与B（私家侦探）在城市中展开了一系列关于都市传说的调查行动。两人先调查了废弃大楼，期间B就A的流程正直提出不满，A坚持原流程，B无言但也没有离开。两人最终发现了希腊太阳与鸟状的浮雕，随后前往图书馆查阅相关资料。在图书馆查阅过程中，他们遇到了神秘人物C。B以高温犯困为借口先行离开，在市中心的地下室一对一接触C，并给出了一个未来可被兑现的任意承诺作为筹码，C提供了关于神秘符号与都市传说可能的关系。但A跟踪C到这里且发现了B，两人激烈争吵，C趁乱离开。
--> 可以发现示例中并不需要说B如何表达不满、B离开时A的反应、B和C碰面具体说了什么等，但因果与进展已经全盘记录在案（如 背景环境为什么影响行动、浮雕是什么样子的、去哪里查资料、在哪里遇到C、筹码是什么、C提供了什么）
-
-【片段·总结怎么写】
-· 写清这一片段「发生了什么」，即 在场有谁、谁对谁做了什么、来龙去脉与归属…
-· 省去所有「逐帧编排」——那种一举一动的纯装饰性连续动作（擦纸巾、发抖、后退之类）；它们的质感若值得留，交给「摘录」。
-· 高分辨率的细节（如愣住、大笑、之类）不进入总结，同样仅在值得保留时交给摘录。
-· 只记发生过的事实。不要写「当前状态」「还没了结」「这是伏笔」这类推断或预测。
-示例：
-· A与B一同进入了废弃大楼3楼左侧的空房间。两人在房间里发现了一个奇怪的装置，A尝试操作它，但装置毫无反应。B观察后基于之前图书馆查到的信息提出了一个新的按键顺序。按照此方法和A对嫌疑人的侧写直觉作为修正，两人成功启动了装置，房间内的灯光亮起，显示出一幅地图。
--> 可以发现此示例展示了详细的细节如空房间位置、两人的解密思路等。但A的侧写直觉具体是什么、成功启动后除了地图显现还有什么细节并不需要在这里展示
-
-【片段·摘录怎么挑】
-· 唯一判据：「总结说完之后，还有哪些瞬间与闪回在未来会被角色回忆起？」总结已经带到的，不收；总结捞不回、在未来可能会被记起的具体瞬间（无论是感知记忆还是具体的语言记忆），才收。
-  · 表面的情绪不是判据：一次沉默可以收，一串俏皮话也可以收——只要是总结无法言明的有趣的/互动的/有张力的/值得被记住的/特殊的。
-  · 举例：收到礼物时的反应；某个下意识做了又撤回的；某个无意识的；因为某些原因突然愣神；…
-· 留原话、原动作、原意象，别改写成第三人称转述。条目本身是完整句子，是事件存在的意义所在。
-· 条数完全弹性：高浓度的名场面可以很多条，装饰/过渡/日常常态 也可以一条都没有，保持克制。
-· 条目内容应按时间顺序排列，与小总结对齐。即看到此动作可以在小总结的因果事实中找到此条目发生在哪个位置。
-示例：
-  · A说“...”。B反击后，沉默许久。
-  · B别开视线把耳环放在桌上，称“只是随便买的”。A眼睛一亮，抓了起来把玩了一会儿后调侃“口是心非”。
--> 可以发现此示例自带情绪和气氛，但又不带过多无关细节。保留原文和在场角色的伴随反应，B或者A回忆起时都能感受到潜藏的亲密感，而不是“随便买的”这句话本身的疏离。
-
-【红线】
-· 不预测未来、不标伏笔/待解。
-· 不编造原文没有的细节，一切细节都来源于文本本身。
-· 不抽象化、不泛化、不升华：尊重原文的具体性，不要替角色命名情绪或情感关系等。
-· 除非是直接可见的动作或语言 或 是直接来源于文本，否则不要写「情绪/心理」的主观感受。即允许文本明示的动机与因果，但禁止推断性心理。
-</Writing_Guidelines>`;
-  var HISTORICAL = `<Historical_Context>
-${HISTORICAL_PLACEHOLDER}
-</Historical_Context>
-原始记录读取完毕。`;
-  var NOTE = `注意：对于【既存信息】中最后一个容器（仅取其一），其时间范围与【原始记录】中某段有明显重叠且判断合并为一个容器时更有助于保持连续性。请在即将生成的世界存档中增量覆写此容器（即完整保留原本信息基础上新增本次记录，将其作为本次生成的第一个容器；既存末尾容器中的旧事实不得降精度），确保此容器：“容器标题” 保持一致。`;
-  var GUIDANCE_BLOCK = `对【原始记录】的补充信息（用于校正理解与调整取舍，但不得覆盖红线、事实保真及输出格式要求）：
-${GUIDANCE_PLACEHOLDER}`;
-  var COT = `<Output_Requirements>
-在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
-<thinking>
-## 读取【既存信息】和【原始记录】：
-1. 分析【既存信息】中最近一个容器的时间范围、在场人物、事件发生的逻辑顺序。
-2. 分析【原始记录】中各段的时间线索、在场人物、事件发生的逻辑顺序，理清明线和暗线。
-
-## 判断容器边界：
-1. 判断【原始记录】首段是否落在既存末尾容器的时间范围内 → 若是，本次输出必须以该容器标题重新输出整个容器，含既存的旧片段。其余内容成为新容器。
-2. 以【原始记录】的段落为单位，分离各段落中线索，至少判定每一段落中是否存在多线并行，对其内容进行提取（如主线可为日常常态中的事件，暗线/贯穿线可为某人单独的成长线 或 复仇线等，发生在日常的间隙，并不局限于题材）。
-3. 贯穿线注明各笔发生在哪些段落内，将散落各处的贯穿线推进串成脉络
-
-## 基于<Basic_Rules>切分容器：
-1. 优先寻找贯穿线。如果没找到，请给出理由。
-2. 余下片段继续分类。
--> 本身并不一定需要按照时间线进行切分，更多的是按主题和相关性。理由应与<Basic_Rules: 【片段】>对齐。
-3. 列举切分完毕的片段标题。按照信息相近度将相近时间区间内对片段加入同一容器。
-
-## 基于<Writing_Guidelines>萃取摘录：
-对每个切分完毕的片段，基于其内部逻辑筛选潜在可摘录信息。
-高置信值得被保留的示例：理由？
-应被丢弃的示例：理由？
--> 理由应与<Writing_Guidelines: 【片段·摘录怎么挑】>对齐。
-
-## 正式输出前，再回忆一遍<Writing_Guidelines: 【红线】>与其他重要规则和信息。
-</thinking>
-
-思考完毕后，输出 <World_Archive>…</World_Archive>，不要额外解释。
-</Output_Requirements>
-
-现在从思考<thinking>开始：`;
-  var POST = COT;
-  function defaultOrchestration() {
-    return [
-      { id: "skeleton", label: "骨架规则（身份 + 结构 + 红线）", role: "system", kind: "static", content: SKELETON, enabled: true },
-      { id: "historical_context", label: "Historical Context（既存 + 原始）", role: "user", kind: "historical_context", content: HISTORICAL, enabled: true },
-      { id: "note", label: "注意（增量覆写等说明）", role: "system", kind: "static", content: NOTE, enabled: true },
-      { id: "guidance", label: "重roll 引导槽（本段个性化需求）", role: "user", kind: "guidance", content: GUIDANCE_BLOCK, enabled: true },
-      { id: "post", label: "后置提示词", role: "system", kind: "static", content: POST, enabled: true }
-    ];
-  }
-  function promptFingerprint(content) {
-    let hash = 2166136261;
-    for (let i = 0; i < content.length; i++) {
-      hash ^= content.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return `fnv1a:${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
-  }
-  function resolveOrchestration(overrides) {
-    return defaultOrchestration().map((entry) => {
-      const override = overrides[entry.id];
-      return override ? { ...entry, content: override.content } : entry;
-    });
-  }
-  function fill(template, placeholder, value) {
-    return template.includes(placeholder) ? template.split(placeholder).join(value) : `${template}
-${value}`;
-  }
-  function assemblePrompt(entries, input) {
-    const prompts = [];
-    for (const e of entries) {
-      if (!e.enabled) continue;
-      let content;
-      if (e.kind === "historical_context") {
-        content = fill(e.content, HISTORICAL_PLACEHOLDER, input.historicalContext);
-      } else if (e.kind === "guidance") {
-        if (!input.guidance.trim()) continue;
-        content = fill(e.content, GUIDANCE_PLACEHOLDER, input.guidance);
-      } else {
-        content = e.content;
-      }
-      prompts.push({ role: e.role, content });
-    }
-    return prompts;
-  }
-
-  // src/plugin/summary-orchestration.ts
-  var SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER = "{{所有符合条件的信息，也就是所有<World_Archive>以及被抓到的<Flux>}}";
-  var SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER = "{{ARCHIVE_CONTEXT}}";
-  var SUMMARY_TARGET_FLUX_PLACEHOLDER = "{{TARGET_FLUX}}";
-  var SUMMARY_GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
-  var PRE = `你是一个「记忆审计归档系统」。
-该审计不参与叙事生成，不负责创作与风格选择。仅对已生成的显现内容（<Flux>）进行可逆压缩与正确性校验。其输出的 Archive 将作为后续一切系统推演的唯一历史输入。`;
-  var RUNTIME = `<Historical_Context>
-${SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER}
-</Historical_Context>
-
-${SUMMARY_GUIDANCE_PLACEHOLDER}`;
-  var POST2 = `<Output_Requirements>
-在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
-<thinking>
-
-[阶段1: 游标校准]
-- **存档查询**：扫描全部<World_Archive>, 梳理归属于Archive的所有因果结。
-- **锚定基准**: 反向扫描最近的 \`</World_Archive>\`，记录其 [事件标题| 锚点 | 起止时间]。
-- **捕获域**: 锁定自基准线起的所有 \`<Flux>\` 条目。
-  - 按顺序罗列捕获域中所有flux信息的[起始点]、[结束点]及[核心事件逻辑]。
-
-[阶段2: 容器分段]
-- **指令**: 将捕获的 Flux 条目分配至不同的[事件容器]中。
-- **强制切分**:
-  1. 单个事件容器最多包含 **3个** \`<Flux>\` 标签组。若超过，必须**强制截断**，将余下内容放入[下一事件容器]。
-  2. 无论数量是否达标，一旦检测到**物理空间转移**或**时间显著跨度**或**高张力高密度互动**，必须**立即截断**，建立新容器。
-- *Output Preview*: [Event_1 (Flux 1-3)] -> [Event_2 (Flux 4-6)]...
-- 整理每个容器内部的细节走向（如：每个动作/对话与哪个动作有逻辑关联）
-
-[阶段3: 质感萃取]
-以bullet point列举每个事件容器需要保留的P0；从P1中补全信息使逻辑连贯因果明确：
-P0（必须保留）
-- 涉及人物关系、情感或行动方向的叙述（e.g. 因为什么而说某句话、做某件事）
-- 关键对白原句
-- 明确的物理行为（进入 / 离开 / 触碰 / 拿起 / ...）
-- 事实的变化（局势变化/人物常驻位置转移/新增人物/人物退场/…）
-P1（可选保留）
-- 触发情绪变化的感官锚点（温度 / 气味 / 声音）与对应的情绪本身
-- 少量微动作（停顿、视线移动）
-P2（默认删除）
-- 连续的环境描写
-- 重复或弱相关的五感
-- 类似修辞或文学风格句
-
-原词锁定:
-- 严禁将“具体的动作/物体”转化为“抽象的状态/评价”。
-- 避免总结性心理判断（如：他意识到 / 她终于明白）。
-
-- 特例：**性行为描写**抽象为发生了什么，不需要性行为的具体细节。但更注重保留其中的信息、情感、对白、约定等。允许多容器合并（即优先级高于阶段2容器分段）
-
-[阶段4: 蒙太奇编织]
-- **可逆性自检**: 假设丢失所有 Flux，仅读取压缩后的 Archive，能否推导出那个瞬间行动的因果关系、还原当下的人物状态？若不能，说明压缩过度，需回滚并在锚定层增加细节。
-</thinking>
-
-思考完毕后，输出 <World_Archive>…</World_Archive>，不要额外解释。
-
-- **Format (多事件循环输出)**：
-<World_Archive>
-// Loop for each Event Container
-[事件标题|情绪/感知坐标（约3个关键词）|起止时间]
-[不进行评价、推论、补全。蒙太奇式按客观顺序原影流畅显现所有情节、感官锚点、对白、心理转折、情绪流动 等，这些元素都将化作叙事的温度与感知记忆。]
-
-// If Next Event exists, insert line break
-[事件标题|情绪/感知坐标|起止时间]
-[...]
-
-// End Loop
-</World_Archive>
-
-</Output_Requirements>
-
-现在从思考<thinking>开始：
-
-<thinking>`;
-  function defaultSummaryOrchestration() {
-    return [
-      { id: "pre", label: "前置定义", role: "system", kind: "static", content: PRE, enabled: true },
-      { id: "runtime", label: "运行时填入", role: "user", kind: "runtime", content: RUNTIME, enabled: true },
-      { id: "post", label: "后置思考与输出", role: "system", kind: "static", content: POST2, enabled: true }
-    ];
-  }
-  function summaryPromptFingerprint(content) {
-    let hash = 2166136261;
-    for (let i = 0; i < content.length; i++) {
-      hash ^= content.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return `fnv1a:${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
-  }
-  function makeSummaryOrchestrationOverride(content, baseContent) {
-    return { content, baseHash: summaryPromptFingerprint(baseContent) };
-  }
-  function resolveSummaryOrchestration(overrides) {
-    return defaultSummaryOrchestration().map((entry) => {
-      const override = overrides[entry.id];
-      return override ? { ...entry, content: override.content } : entry;
-    });
-  }
-  function fillOrAppend(template, placeholder, value, fallback) {
-    if (template.includes(placeholder)) return template.split(placeholder).join(value);
-    return `${template.trimEnd()}
-
-${fallback}`;
-  }
-  function fillRuntime(template, input) {
-    const historicalContext = [input.archiveContext.trim(), input.targetFlux.trim()].filter(Boolean).join("\n\n");
-    const hasUnifiedPlaceholder = template.includes(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER);
-    const hasLegacyArchivePlaceholder = template.includes(SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER);
-    const hasLegacyFluxPlaceholder = template.includes(SUMMARY_TARGET_FLUX_PLACEHOLDER);
-    let content = template;
-    if (hasUnifiedPlaceholder) {
-      content = content.split(SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER).join(historicalContext);
-    }
-    if (hasLegacyArchivePlaceholder || hasLegacyFluxPlaceholder) {
-      content = fillOrAppend(
-        content,
-        SUMMARY_ARCHIVE_CONTEXT_PLACEHOLDER,
-        input.archiveContext,
-        `<Archive_Context>
-${input.archiveContext}
-</Archive_Context>`
-      );
-      content = fillOrAppend(
-        content,
-        SUMMARY_TARGET_FLUX_PLACEHOLDER,
-        input.targetFlux,
-        `<Target_Flux>
-${input.targetFlux}
-</Target_Flux>`
-      );
-    } else if (!hasUnifiedPlaceholder) {
-      content = `${content.trimEnd()}
-
-<Historical_Context>
-${historicalContext}
-</Historical_Context>`;
-    }
-    const guidance = input.guidance?.trim() ?? "";
-    const guidanceBlock = guidance ? `<Guidance>
-${guidance}
-</Guidance>` : "";
-    if (content.includes(SUMMARY_GUIDANCE_PLACEHOLDER)) {
-      content = content.split(SUMMARY_GUIDANCE_PLACEHOLDER).join(guidanceBlock);
-    } else if (guidanceBlock) {
-      content = `${content.trimEnd()}
-
-${guidanceBlock}`;
-    }
-    return content.trim();
-  }
-  function assembleSummaryPrompt(entries, input) {
-    return entries.flatMap((entry) => {
-      if (!entry.enabled) return [];
-      const content = entry.kind === "runtime" ? fillRuntime(entry.content, input) : entry.content;
-      return [{ role: entry.role, content }];
-    });
-  }
-
   // src/plugin/config.ts
   var CONFIG_KEY = "memoryArchiver";
   var CONFIG_VERSION = 8;
@@ -382,13 +60,6 @@ ${guidanceBlock}`;
   var LEGACY_DEFAULT_MODEL_HINTS = /* @__PURE__ */ new Set([
     "任务较复杂，推荐 Gemini 等智商尚可的模型就够。"
   ]);
-  var LEGACY_DEFAULT_PROMPT_HASHES = {
-    skeleton: ["fnv1a:2088:eeafee11"],
-    historical_context: ["fnv1a:75:492c7d5d"],
-    note: ["fnv1a:156:e4051a79"],
-    guidance: ["fnv1a:59:32dae3b4"],
-    post: ["fnv1a:674:80798d0e"]
-  };
   function defaultConfig() {
     return {
       version: CONFIG_VERSION,
@@ -399,11 +70,9 @@ ${guidanceBlock}`;
       timelineConnectionProfileId: null,
       summaryConnectionProfileId: null,
       modelHint: DEFAULT_MODEL_HINT,
-      orchestrationOverrides: {},
       summaryInterval: DEFAULT_SUMMARY_INTERVAL,
       summaryPlaceholderFloor: null,
       summaryLastRemindedFloor: null,
-      summaryOrchestrationOverrides: {},
       timelineEnabled: true,
       summaryEnabled: true
     };
@@ -411,71 +80,13 @@ ${guidanceBlock}`;
   function isRecord(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
   }
-  function coerceOverrides(raw) {
-    if (!isRecord(raw)) return {};
-    const overrides = {};
-    const knownIds = new Set(defaultOrchestration().map((entry) => entry.id));
-    for (const [id, value] of Object.entries(raw)) {
-      if (!knownIds.has(id)) continue;
-      if (!isRecord(value) || typeof value.content !== "string" || typeof value.baseHash !== "string") continue;
-      overrides[id] = { content: value.content, baseHash: value.baseHash };
-    }
-    return overrides;
-  }
-  function coerceSummaryOverrides(raw) {
-    if (!isRecord(raw)) return {};
-    const overrides = {};
-    const knownIds = new Set(defaultSummaryOrchestration().map((entry) => entry.id));
-    for (const [id, value] of Object.entries(raw)) {
-      if (!knownIds.has(id)) continue;
-      if (!isRecord(value) || typeof value.content !== "string" || typeof value.baseHash !== "string") continue;
-      overrides[id] = { content: value.content, baseHash: value.baseHash };
-    }
-    return overrides;
-  }
   function coerceModelHint(raw) {
     if (typeof raw !== "string" || LEGACY_DEFAULT_MODEL_HINTS.has(raw)) return DEFAULT_MODEL_HINT;
     return raw;
   }
-  function legacyEntries(raw) {
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((value) => {
-      if (!isRecord(value) || typeof value.id !== "string" || typeof value.content !== "string") return [];
-      return [value];
-    });
-  }
-  function legacyContentFor(id, byId) {
-    const direct = byId.get(id);
-    if (direct) return direct.content;
-    if (id !== "post") return void 0;
-    const oldParts = ["cot", "output_format"].map((oldId) => byId.get(oldId)?.content?.trim()).filter((content) => !!content);
-    return oldParts.length ? oldParts.join("\n\n") : void 0;
-  }
-  function migrateLegacyOrchestration(raw) {
-    const entries = legacyEntries(raw);
-    if (!entries.length) return {};
-    const byId = new Map(entries.map((entry) => [entry.id, entry]));
-    const overrides = {};
-    for (const builtin of defaultOrchestration()) {
-      const content = legacyContentFor(builtin.id, byId);
-      if (content === void 0) continue;
-      const contentHash = promptFingerprint(content);
-      const legacyHashes = LEGACY_DEFAULT_PROMPT_HASHES[builtin.id] ?? [];
-      const knownBuiltinHashes = /* @__PURE__ */ new Set([...legacyHashes, promptFingerprint(builtin.content)]);
-      if (knownBuiltinHashes.has(contentHash)) continue;
-      overrides[builtin.id] = {
-        content,
-        baseHash: legacyHashes[0] ?? promptFingerprint(builtin.content)
-      };
-    }
-    return overrides;
-  }
   function coerce(raw) {
     const d = defaultConfig();
     if (!isRecord(raw)) return d;
-    const oldVersion = typeof raw.version === "number" ? raw.version : 0;
-    const migrated = oldVersion < CONFIG_VERSION ? migrateLegacyOrchestration(raw.orchestration) : {};
-    const explicit = coerceOverrides(raw.orchestrationOverrides);
     return {
       version: CONFIG_VERSION,
       n: normalizeN(typeof raw.n === "number" ? raw.n : void 0),
@@ -485,11 +96,9 @@ ${guidanceBlock}`;
       timelineConnectionProfileId: typeof raw.timelineConnectionProfileId === "string" ? raw.timelineConnectionProfileId : typeof raw.connectionProfileId === "string" ? raw.connectionProfileId : null,
       summaryConnectionProfileId: typeof raw.summaryConnectionProfileId === "string" ? raw.summaryConnectionProfileId : null,
       modelHint: coerceModelHint(raw.modelHint),
-      orchestrationOverrides: { ...migrated, ...explicit },
       summaryInterval: normalizeSummaryInterval(raw.summaryInterval),
       summaryPlaceholderFloor: typeof raw.summaryPlaceholderFloor === "number" && Number.isInteger(raw.summaryPlaceholderFloor) ? raw.summaryPlaceholderFloor : null,
       summaryLastRemindedFloor: typeof raw.summaryLastRemindedFloor === "number" && Number.isInteger(raw.summaryLastRemindedFloor) ? raw.summaryLastRemindedFloor : null,
-      summaryOrchestrationOverrides: coerceSummaryOverrides(raw.summaryOrchestrationOverrides),
       timelineEnabled: typeof raw.timelineEnabled === "boolean" ? raw.timelineEnabled : d.timelineEnabled,
       summaryEnabled: typeof raw.summaryEnabled === "boolean" ? raw.summaryEnabled : d.summaryEnabled
     };
@@ -500,10 +109,8 @@ ${guidanceBlock}`;
       boundary: 0,
       lastKnownFloor: null,
       lastDismissedFloor: null,
-      orchestrationOverrides: { ...cfg.orchestrationOverrides },
       summaryPlaceholderFloor: null,
-      summaryLastRemindedFloor: null,
-      summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides }
+      summaryLastRemindedFloor: null
     };
   }
   function loadConfig(deps) {
@@ -521,19 +128,86 @@ ${guidanceBlock}`;
   }
   function saveConfig(deps, cfg) {
     deps.insertOrAssignVariables(
-      {
-        [CONFIG_KEY]: {
-          ...cfg,
-          orchestrationOverrides: { ...cfg.orchestrationOverrides },
-          summaryOrchestrationOverrides: { ...cfg.summaryOrchestrationOverrides }
-        }
-      },
+      { [CONFIG_KEY]: { ...cfg } },
       { type: "chat" }
     );
   }
   function saveGlobalDefault(deps, cfg) {
     const seed = asGlobalSeed(cfg);
     deps.insertOrAssignVariables({ [CONFIG_KEY]: seed }, { type: "global" });
+  }
+
+  // src/plugin/prompt-preferences.ts
+  var PROMPT_PREFERENCES_KEY = "memoryArchiverPromptPreferences";
+  var PROMPT_PREFERENCES_VERSION = 1;
+  var EDITABLE_TIMELINE_PROMPT_IDS = ["skeleton", "post"];
+  var EDITABLE_SUMMARY_PROMPT_IDS = ["pre", "post"];
+  function defaultPromptPreferences() {
+    return {
+      version: PROMPT_PREFERENCES_VERSION,
+      timelineOverrides: {},
+      summaryOverrides: {}
+    };
+  }
+  function isRecord2(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+  function coerceTimelineOverrides(raw) {
+    if (!isRecord2(raw)) return {};
+    const knownIds = new Set(EDITABLE_TIMELINE_PROMPT_IDS);
+    const overrides = {};
+    for (const [id, value] of Object.entries(raw)) {
+      if (!knownIds.has(id) || !isRecord2(value)) continue;
+      if (typeof value.content !== "string" || typeof value.acknowledgedBuiltinHash !== "string") continue;
+      overrides[id] = {
+        content: value.content,
+        acknowledgedBuiltinHash: value.acknowledgedBuiltinHash
+      };
+    }
+    return overrides;
+  }
+  function coerceSummaryOverrides(raw) {
+    if (!isRecord2(raw)) return {};
+    const knownIds = new Set(EDITABLE_SUMMARY_PROMPT_IDS);
+    const overrides = {};
+    for (const [id, value] of Object.entries(raw)) {
+      if (!knownIds.has(id) || !isRecord2(value)) continue;
+      if (typeof value.content !== "string" || typeof value.acknowledgedBuiltinHash !== "string") continue;
+      overrides[id] = {
+        content: value.content,
+        acknowledgedBuiltinHash: value.acknowledgedBuiltinHash
+      };
+    }
+    return overrides;
+  }
+  function loadPromptPreferences(deps) {
+    const raw = deps.getVariables({ type: "global" })[PROMPT_PREFERENCES_KEY];
+    if (!isRecord2(raw) || raw.version !== PROMPT_PREFERENCES_VERSION) {
+      return defaultPromptPreferences();
+    }
+    return {
+      version: PROMPT_PREFERENCES_VERSION,
+      timelineOverrides: coerceTimelineOverrides(raw.timelineOverrides),
+      summaryOverrides: coerceSummaryOverrides(raw.summaryOverrides)
+    };
+  }
+  function savePromptPreferences(deps, preferences) {
+    const timelineOverrides = Object.fromEntries(
+      Object.entries(preferences.timelineOverrides).map(([id, override]) => [id, { ...override }])
+    );
+    const summaryOverrides = Object.fromEntries(
+      Object.entries(preferences.summaryOverrides).map(([id, override]) => [id, { ...override }])
+    );
+    deps.insertOrAssignVariables(
+      {
+        [PROMPT_PREFERENCES_KEY]: {
+          version: PROMPT_PREFERENCES_VERSION,
+          timelineOverrides,
+          summaryOverrides
+        }
+      },
+      { type: "global" }
+    );
   }
 
   // src/plugin/chat-events.ts
@@ -1591,7 +1265,7 @@ ${pendingBlock}`;
   // src/plugin/commit-log.ts
   var COMMIT_LOG_KEY = "memoryArchiverCommitTx";
   var COMMIT_LOG_VERSION = 1;
-  function isRecord2(value) {
+  function isRecord3(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
   }
   function isFloor(value) {
@@ -1616,7 +1290,7 @@ ${pendingBlock}`;
     return normalizeFloors(value);
   }
   function parseCommitLog(raw) {
-    if (!isRecord2(raw) || raw.version !== COMMIT_LOG_VERSION) return null;
+    if (!isRecord3(raw) || raw.version !== COMMIT_LOG_VERSION) return null;
     if (typeof raw.txId !== "string" || !raw.txId) return null;
     if (!isFloor(raw.targetFloor) || !isFloor(raw.through)) return null;
     const plannedOldFloors = parseFloorArray(raw.plannedOldFloors);
@@ -1632,7 +1306,7 @@ ${pendingBlock}`;
     if (raw.error !== null && typeof raw.error !== "string") return null;
     let supersede = null;
     if (raw.supersede !== null) {
-      if (!isRecord2(raw.supersede)) return null;
+      if (!isRecord3(raw.supersede)) return null;
       if (!isFloor(raw.supersede.plannedFloor) || typeof raw.supersede.done !== "boolean") return null;
       supersede = { plannedFloor: raw.supersede.plannedFloor, done: raw.supersede.done };
     }
@@ -1743,6 +1417,301 @@ ${pendingBlock}`;
     next.completedAt = now;
     next.error = null;
     return next;
+  }
+
+  // src/plugin/orchestration.ts
+  var HISTORICAL_PLACEHOLDER = "{{HISTORICAL_CONTEXT}}";
+  var GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
+  var SKELETON = `你是一个「记忆归档器」。把给定的角色扮演原始记录，进一步压缩篇幅，成为一份结构化《世界档案》。以因果为时间轴，仅值得保留的细节以摘录方式存在。
+最终目标：把这份档案当作角色记忆来源。只把真正抓人的瞬间原样留住（留为摘录）；把记忆中大致经历了什么留住（留为片段总结）。绝对禁止任何形式增添细节。
+
+<Basic_Rules>
+用 <World_Archive> … </World_Archive> 包裹整份档案。
+档案按时间顺序排列若干「时间容器」。每个时间容器＝一段时间（比如一整年、一场持续几天的副本、某几天）。
+Legend：《…》为容器标题，[…]为片段标题。// 后内容为生成引导，不是生成格式。
+具体结构如下：
+<World_Archive>
+《容器标题 | 时间段》
+…… // 容器总结：总领本容器内所有片段的概览——这段时间整体上发生了什么
+
+  [片段标题 | 时间范围]
+  …… // 片段总结：按逻辑顺序说明发生了什么，保持因果不断连，前后可推导，人物在场
+  · …… // 摘录：保留原动作/原对话/原意象等
+  [片段标题 | 时间范围]
+  ……
+  · ……
+  · ……
+  // 下一个潜在的片段
+// 下一个潜在的容器
+</World_Archive>
+
+【容器】
+· 容器（大段时间）的断点＝跨年/跨月、进出一个大场景或副本、剧情大阶段切换。容器允许尽可能宏观。
+· 按“故事的自然断点”切，而不是机械按段数/字数切。
+· 无法被归入任何片段的零散时间段，单独成为一个容器，内部不挂载片段。
+
+【片段】
+· 片段覆盖一个「时间范围」（不是时间点）；范围之间可以重叠、可以并列——容器内的片段不必排成一条严格的时间线。
+· 片段只带一个标题和它的时间范围，不打标签、不标注线索。
+· 合法片段类型：
+    · 时间切片：一段连续的场景，占一个不重叠的时段。
+    · 贯穿线：一条零散出现、合起来才成整体的暗线，聚成一个跨度片段，与切片并列。举例，一个 [年度] 容器里可以同时并列：[收集情报 | 全年]、[日常事件1 | 上半年]、[日常事件2 | 下半年]、[复仇| 下半年]，贯穿线（此处的收集情报与复仇）与两段日常在时间上可以重叠或交错。
+    · 共性切片：同一容器中复数次出现的相同场景/相同在场角色/相似互动模式（如 [刷牙洗脸| 时间A-B & C-D]为共性切片、[中午外出| 时间 B-C]为日常切片），可以合并为同一片段。具体差异可下放摘录。
+ · 判别贯穿线：某条线每次只零星一两笔，连起来才是完整贯穿线进展 → 聚成一段；每次都自成一场完整的戏 → 各自切片。（举例：暗线、个人发展线、整体局势变化...）
+· 一个具体瞬间的细节只归属一个片段：若某个贯穿线A发生在片段B里，判断它主要发生在哪个场景（片段B中贯穿线A的闪回影响了角色行动），就只具体写进那一片段（此处为B片段），另一侧一笔带过。
+· 片段大致按起始时间排；并列/重叠的用各自时间范围区分，跨度大的贯穿线放前放后都行。
+</Basic_Rules>
+
+<Writing_Guidelines>
+【容器·总结怎么写】
+· 站在整个容器的高度，尽可能按照时间顺序，一段话讲清这段时间「整体上发生了什么」，尤其是三要素：时间、地点、在场人物（只要是出现的人名，配角也不要遗漏，这关系到哪些角色在场知道某些事）。
+· 它是这个容器最顶上的概览：只读它，就能知道这段时间的大致状态与走向，不必逐个看片段。
+· 粗，但不是概括性空话，只讲发生的事实——要能让人跳过下面的片段也不至于断片。
+示例：
+· 这个夏天很热，A（调查员）与B（私家侦探）在城市中展开了一系列关于都市传说的调查行动。两人先调查了废弃大楼，期间B就A的流程正直提出不满，A坚持原流程，B无言但也没有离开。两人最终发现了希腊太阳与鸟状的浮雕，随后前往图书馆查阅相关资料。在图书馆查阅过程中，他们遇到了神秘人物C。B以高温犯困为借口先行离开，在市中心的地下室一对一接触C，并给出了一个未来可被兑现的任意承诺作为筹码，C提供了关于神秘符号与都市传说可能的关系。但A跟踪C到这里且发现了B，两人激烈争吵，C趁乱离开。
+-> 可以发现示例中并不需要说B如何表达不满、B离开时A的反应、B和C碰面具体说了什么等，但因果与进展已经全盘记录在案（如 背景环境为什么影响行动、浮雕是什么样子的、去哪里查资料、在哪里遇到C、筹码是什么、C提供了什么）
+
+【片段·总结怎么写】
+· 写清这一片段「发生了什么」，即 在场有谁、谁对谁做了什么、来龙去脉与归属…
+· 省去所有「逐帧编排」——那种一举一动的纯装饰性连续动作（擦纸巾、发抖、后退之类）；它们的质感若值得留，交给「摘录」。
+· 高分辨率的细节（如愣住、大笑、之类）不进入总结，同样仅在值得保留时交给摘录。
+· 只记发生过的事实。不要写「当前状态」「还没了结」「这是伏笔」这类推断或预测。
+示例：
+· A与B一同进入了废弃大楼3楼左侧的空房间。两人在房间里发现了一个奇怪的装置，A尝试操作它，但装置毫无反应。B观察后基于之前图书馆查到的信息提出了一个新的按键顺序。按照此方法和A对嫌疑人的侧写直觉作为修正，两人成功启动了装置，房间内的灯光亮起，显示出一幅地图。
+-> 可以发现此示例展示了详细的细节如空房间位置、两人的解密思路等。但A的侧写直觉具体是什么、成功启动后除了地图显现还有什么细节并不需要在这里展示
+
+【片段·摘录怎么挑】
+· 唯一判据：「总结说完之后，还有哪些瞬间与闪回在未来会被角色回忆起？」总结已经带到的，不收；总结捞不回、在未来可能会被记起的具体瞬间（无论是感知记忆还是具体的语言记忆），才收。
+  · 表面的情绪不是判据：一次沉默可以收，一串俏皮话也可以收——只要是总结无法言明的有趣的/互动的/有张力的/值得被记住的/特殊的。
+  · 举例：收到礼物时的反应；某个下意识做了又撤回的；某个无意识的；因为某些原因突然愣神；…
+· 留原话、原动作、原意象，别改写成第三人称转述。条目本身是完整句子，是事件存在的意义所在。
+· 条数完全弹性：高浓度的名场面可以很多条，装饰/过渡/日常常态 也可以一条都没有，保持克制。
+· 条目内容应按时间顺序排列，与小总结对齐。即看到此动作可以在小总结的因果事实中找到此条目发生在哪个位置。
+示例：
+  · A说“...”。B反击后，沉默许久。
+  · B别开视线把耳环放在桌上，称“只是随便买的”。A眼睛一亮，抓了起来把玩了一会儿后调侃“口是心非”。
+-> 可以发现此示例自带情绪和气氛，但又不带过多无关细节。保留原文和在场角色的伴随反应，B或者A回忆起时都能感受到潜藏的亲密感，而不是“随便买的”这句话本身的疏离。
+
+【红线】
+· 不预测未来、不标伏笔/待解。
+· 不编造原文没有的细节，一切细节都来源于文本本身。
+· 不抽象化、不泛化、不升华：尊重原文的具体性，不要替角色命名情绪或情感关系等。
+· 除非是直接可见的动作或语言 或 是直接来源于文本，否则不要写「情绪/心理」的主观感受。即允许文本明示的动机与因果，但禁止推断性心理。
+</Writing_Guidelines>`;
+  var HISTORICAL = `<Historical_Context>
+${HISTORICAL_PLACEHOLDER}
+</Historical_Context>
+原始记录读取完毕。`;
+  var NOTE = `注意：对于【既存信息】中最后一个容器（仅取其一），其时间范围与【原始记录】中某段有明显重叠且判断合并为一个容器时更有助于保持连续性。请在即将生成的世界存档中增量覆写此容器（即完整保留原本信息基础上新增本次记录，将其作为本次生成的第一个容器；既存末尾容器中的旧事实不得降精度），确保此容器：“容器标题” 保持一致。`;
+  var GUIDANCE_BLOCK = `对【原始记录】的补充信息（用于校正理解与调整取舍，但不得覆盖红线、事实保真及输出格式要求）：
+${GUIDANCE_PLACEHOLDER}`;
+  var COT = `<Output_Requirements>
+在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
+<thinking>
+## 读取【既存信息】和【原始记录】：
+1. 分析【既存信息】中最近一个容器的时间范围、在场人物、事件发生的逻辑顺序。
+2. 分析【原始记录】中各段的时间线索、在场人物、事件发生的逻辑顺序，理清明线和暗线。
+
+## 判断容器边界：
+1. 判断【原始记录】首段是否落在既存末尾容器的时间范围内 → 若是，本次输出必须以该容器标题重新输出整个容器，含既存的旧片段。其余内容成为新容器。
+2. 以【原始记录】的段落为单位，分离各段落中线索，至少判定每一段落中是否存在多线并行，对其内容进行提取（如主线可为日常常态中的事件，暗线/贯穿线可为某人单独的成长线 或 复仇线等，发生在日常的间隙，并不局限于题材）。
+3. 贯穿线注明各笔发生在哪些段落内，将散落各处的贯穿线推进串成脉络
+
+## 基于<Basic_Rules>切分容器：
+1. 优先寻找贯穿线。如果没找到，请给出理由。
+2. 余下片段继续分类。
+-> 本身并不一定需要按照时间线进行切分，更多的是按主题和相关性。理由应与<Basic_Rules: 【片段】>对齐。
+3. 列举切分完毕的片段标题。按照信息相近度将相近时间区间内对片段加入同一容器。
+
+## 基于<Writing_Guidelines>萃取摘录：
+对每个切分完毕的片段，基于其内部逻辑筛选潜在可摘录信息。
+高置信值得被保留的示例：理由？
+应被丢弃的示例：理由？
+-> 理由应与<Writing_Guidelines: 【片段·摘录怎么挑】>对齐。
+
+## 正式输出前，再回忆一遍<Writing_Guidelines: 【红线】>与其他重要规则和信息。
+</thinking>
+
+思考完毕后，输出 <World_Archive>…</World_Archive>，不要额外解释。
+</Output_Requirements>
+
+现在从思考<thinking>开始：`;
+  var POST = COT;
+  function defaultOrchestration() {
+    return [
+      { id: "skeleton", label: "骨架规则（身份 + 结构 + 红线）", role: "system", kind: "static", content: SKELETON, enabled: true },
+      { id: "historical_context", label: "Historical Context（既存 + 原始）", role: "system", kind: "historical_context", content: HISTORICAL, enabled: true },
+      { id: "note", label: "注意（增量覆写等说明）", role: "system", kind: "static", content: NOTE, enabled: true },
+      { id: "guidance", label: "重roll 引导槽（本段个性化需求）", role: "system", kind: "guidance", content: GUIDANCE_BLOCK, enabled: true },
+      { id: "post", label: "后置提示词", role: "system", kind: "static", content: POST, enabled: true }
+    ];
+  }
+  function promptFingerprint(content) {
+    let hash = 2166136261;
+    for (let i = 0; i < content.length; i++) {
+      hash ^= content.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a:${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  }
+  function resolveOrchestration(overrides) {
+    return defaultOrchestration().map((entry) => {
+      const override = overrides[entry.id];
+      return override ? { ...entry, content: override.content } : entry;
+    });
+  }
+  function fill(template, placeholder, value) {
+    return template.includes(placeholder) ? template.split(placeholder).join(value) : `${template}
+${value}`;
+  }
+  function assemblePrompt(entries, input) {
+    const prompts = [];
+    for (const e of entries) {
+      if (!e.enabled) continue;
+      let content;
+      if (e.kind === "historical_context") {
+        content = fill(e.content, HISTORICAL_PLACEHOLDER, input.historicalContext);
+      } else if (e.kind === "guidance") {
+        if (!input.guidance.trim()) continue;
+        content = fill(e.content, GUIDANCE_PLACEHOLDER, input.guidance);
+      } else {
+        content = e.content;
+      }
+      prompts.push({ role: e.role, content });
+    }
+    return prompts;
+  }
+
+  // src/plugin/summary-orchestration.ts
+  var SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER = "{{所有符合条件的信息，也就是所有<World_Archive>以及被抓到的<Flux>}}";
+  var SUMMARY_GUIDANCE_PLACEHOLDER = "{{GUIDANCE}}";
+  var PRE = `你是一个「记忆审计归档系统」。
+该审计不参与叙事生成，不负责创作与风格选择。仅对已生成的显现内容（<Flux>）进行可逆压缩与正确性校验。其输出的 Archive 将作为后续一切系统推演的唯一历史输入。`;
+  var RUNTIME = `<Historical_Context>
+${SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER}
+</Historical_Context>
+
+${SUMMARY_GUIDANCE_PLACEHOLDER}`;
+  var POST2 = `<Output_Requirements>
+在开始输出前，请先按如下格式进行思考，并使用<thinking>…</thinking>包裹，不得跳步不得省略。
+
+<thinking>
+[阶段1: 游标校准]
+- **存档查询**：扫描全部<World_Archive>, 梳理归属于Archive的所有因果结。
+- **锚定基准**: 反向扫描最近的 \`</World_Archive>\`，记录其 [事件标题| 锚点 | 起止时间]。
+- **捕获域**: 锁定自基准线起的所有 \`<Flux>\` 条目。
+  - 按顺序罗列捕获域中所有flux信息的[起始点]、[结束点]及[核心事件逻辑]。
+
+[阶段2: 容器分段]
+- **指令**: 将捕获的 Flux 条目分配至不同的[事件容器]中。
+- **强制切分**:
+  1. 单个事件容器最多包含 **3个** \`<Flux>\` 标签组。若超过，必须**强制截断**，将余下内容放入[下一事件容器]。
+  2. 无论数量是否达标，一旦检测到**物理空间转移**或**时间显著跨度**或**高张力高密度互动**，必须**立即截断**，建立新容器。
+- *Output Preview*: [Event_1 (Flux 1-3)] -> [Event_2 (Flux 4-6)]...
+- 整理每个容器内部的细节走向（如：每个动作/对话与哪个动作有逻辑关联）
+
+[阶段3: 质感萃取]
+以bullet point列举每个事件容器需要保留的P0；从P1中补全信息使逻辑连贯因果明确：
+P0（必须保留）
+- 涉及人物关系、情感或行动方向的叙述（e.g. 因为什么而说某句话、做某件事）
+- 关键对白原句
+- 明确的物理行为（进入 / 离开 / 触碰 / 拿起 / ...）
+- 事实的变化（局势变化/人物常驻位置转移/新增人物/人物退场/…）
+P1（可选保留）
+- 触发情绪变化的感官锚点（温度 / 气味 / 声音）与对应的情绪本身
+- 少量微动作（停顿、视线移动）
+P2（默认删除）
+- 连续的环境描写
+- 重复或弱相关的五感
+- 类似修辞或文学风格句
+
+原词锁定:
+- 严禁将“具体的动作/物体”转化为“抽象的状态/评价”。
+- 避免总结性心理判断（如：他意识到 / 她终于明白）。
+
+- 特例：**性行为描写**抽象为发生了什么，不需要性行为的具体细节。但更注重保留其中的信息、情感、对白、约定等。允许多容器合并（即优先级高于阶段2容器分段）
+
+[阶段4: 蒙太奇编织]
+- **可逆性自检**: 假设丢失所有 Flux，仅读取压缩后的 Archive，能否推导出那个瞬间行动的因果关系、还原当下的人物状态？若不能，说明压缩过度，需回滚并在锚定层增加细节。
+</thinking>
+
+思考完毕后，输出 <World_Archive>…</World_Archive>，不要额外解释。
+
+- **Format (多事件循环输出)**：
+<World_Archive>
+// Loop for each Event Container
+[事件标题|情绪/感知坐标（约3个关键词）|起止时间]
+[不进行评价、推论、补全。蒙太奇式按客观顺序原影流畅显现所有情节、感官锚点、对白、心理转折、情绪流动 等，这些元素都将化作叙事的温度与感知记忆。]
+
+// If Next Event exists, insert line break
+[事件标题|情绪/感知坐标|起止时间]
+[...]
+
+// End Loop
+</World_Archive>
+
+</Output_Requirements>
+
+现在从思考<thinking>开始：`;
+  function defaultSummaryOrchestration() {
+    return [
+      { id: "pre", label: "前置定义", role: "system", kind: "static", content: PRE, enabled: true },
+      { id: "runtime", label: "运行时填入", role: "system", kind: "runtime", content: RUNTIME, enabled: true },
+      { id: "post", label: "后置思考与输出", role: "system", kind: "static", content: POST2, enabled: true }
+    ];
+  }
+  function summaryPromptFingerprint(content) {
+    let hash = 2166136261;
+    for (let i = 0; i < content.length; i++) {
+      hash ^= content.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a:${content.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  }
+  function makeSummaryOrchestrationOverride(content, baseContent) {
+    return { content, acknowledgedBuiltinHash: summaryPromptFingerprint(baseContent) };
+  }
+  function resolveSummaryOrchestration(overrides) {
+    return defaultSummaryOrchestration().map((entry) => {
+      const override = overrides[entry.id];
+      return override ? { ...entry, content: override.content } : entry;
+    });
+  }
+  function fillOrAppend(template, placeholder, value, fallback) {
+    if (template.includes(placeholder)) return template.split(placeholder).join(value);
+    return `${template.trimEnd()}
+
+${fallback}`;
+  }
+  function fillRuntime(template, input) {
+    const historicalContext = [input.archiveContext.trim(), input.targetFlux.trim()].filter(Boolean).join("\n\n");
+    let content = fillOrAppend(
+      template,
+      SUMMARY_HISTORICAL_CONTEXT_PLACEHOLDER,
+      historicalContext,
+      `<Historical_Context>
+${historicalContext}
+</Historical_Context>`
+    );
+    const guidance = input.guidance?.trim() ?? "";
+    const guidanceBlock = guidance ? `<Guidance>
+${guidance}
+</Guidance>` : "";
+    if (content.includes(SUMMARY_GUIDANCE_PLACEHOLDER)) {
+      content = content.split(SUMMARY_GUIDANCE_PLACEHOLDER).join(guidanceBlock);
+    } else if (guidanceBlock) {
+      content = `${content.trimEnd()}
+
+${guidanceBlock}`;
+    }
+    return content.trim();
+  }
+  function assembleSummaryPrompt(entries, input) {
+    return entries.flatMap((entry) => {
+      if (!entry.enabled) return [];
+      const content = entry.kind === "runtime" ? fillRuntime(entry.content, input) : entry.content;
+      return [{ role: entry.role, content }];
+    });
   }
 
   // src/plugin/regex-window.ts
@@ -1874,6 +1843,8 @@ ${pendingBlock}`;
 
   // src/plugin/session.ts
   var GENERATION_TIMEOUT_MS = 5 * 60 * 1e3;
+  var EDITABLE_TIMELINE_PROMPT_ID_SET = new Set(EDITABLE_TIMELINE_PROMPT_IDS);
+  var EDITABLE_SUMMARY_PROMPT_ID_SET = new Set(EDITABLE_SUMMARY_PROMPT_IDS);
   var GenerationCancelledError = class extends Error {
     constructor() {
       super("已取消生成");
@@ -1893,6 +1864,9 @@ ${pendingBlock}`;
       this.name = "ChatChangedDuringOperationError";
     }
   };
+  function splitGeneratedResponse(result) {
+    return typeof result === "string" ? { content: result, reasoning: "" } : { content: result.content, reasoning: result.reasoning };
+  }
   var ArchiverSession = class {
     constructor(deps, config, generationTimeoutMs = GENERATION_TIMEOUT_MS, chatState) {
       __publicField(this, "deps", deps);
@@ -1907,6 +1881,8 @@ ${pendingBlock}`;
       __publicField(this, "summaryRound", null);
       /** 提醒、UI、生成和提交共用的唯一聊天读取层。 */
       __publicField(this, "chatState");
+      /** 插件级提示词偏好；只写 global，不随 chat 切换。 */
+      __publicField(this, "promptPreferences", defaultPromptPreferences());
       this.chatState = chatState ?? new ChatStateReader(deps);
     }
     get phase() {
@@ -2107,15 +2083,13 @@ ${pendingBlock}`;
       const archives = liveEntries(read.table).sort(
         (a, b) => a.messageId - b.messageId || a.span[0] - b.span[0]
       );
-      const archiveContext = archives.length ? archives.map((entry) => `【在场档案 · 层 ${entry.messageId}】
-${wrapArchive(stripComments(entry.content), "live")}`).join("\n\n") : "（无既存 World Archive）";
+      const archiveContext = archives.length ? archives.map((entry) => wrapArchive(stripComments(entry.content), "live")).join("\n\n") : "（无既存 World Archive）";
       const fluxes = collectTargetFlux(
         read.messages,
         read.latestLiveArchiveFloor,
         read.currentFloor
       ).filter((flux) => flux.inner.trim().length > 0);
-      const targetFlux = fluxes.map((flux) => `【原始摘要 · 层 ${flux.floor}】
-${flux.raw}`).join("\n\n");
+      const targetFlux = fluxes.map((flux) => flux.raw).join("\n\n");
       return {
         archiveContext,
         targetFlux,
@@ -2209,21 +2183,28 @@ ${flux.raw}`).join("\n\n");
       const generationId = `${round.id}-${++this.generationSequence}`;
       const op = this.beginGeneration(generationId, fallbackPhase);
       try {
-        const raw = await Promise.race([
+        const prompts = assembleSummaryPrompt(round.orchestration, {
+          archiveContext: round.archiveContext,
+          targetFlux: round.targetFlux,
+          guidance
+        });
+        const generated = splitGeneratedResponse(await Promise.race([
           this.deps.generateRaw({
-            ordered_prompts: assembleSummaryPrompt(round.orchestration, {
-              archiveContext: round.archiveContext,
-              targetFlux: round.targetFlux,
-              guidance
-            }),
+            ordered_prompts: prompts,
             generation_id: generationId,
             connection_profile_id: round.connectionProfileId ?? void 0
           }),
           op.abortPromise
-        ]);
+        ]));
         if (this.activeGeneration !== op) throw new GenerationCancelledError();
         this.assertCurrentChat(round.chatEpoch);
-        const candidate = this.toSummaryCandidate(raw, round, guidance);
+        const candidate = this.toSummaryCandidate(
+          generated.content,
+          generated.reasoning,
+          round,
+          guidance,
+          prompts
+        );
         this.releaseGeneration(op, "preview");
         return candidate;
       } catch (error) {
@@ -2231,10 +2212,12 @@ ${flux.raw}`).join("\n\n");
         throw error;
       }
     }
-    toSummaryCandidate(raw, round, guidance) {
+    toSummaryCandidate(raw, reasoning, round, guidance, prompts) {
       const validation = validateSummaryArchive(raw);
       return {
         raw,
+        reasoning,
+        prompts,
         body: validation.block?.inner ?? "",
         validation,
         containers: validation.nodes,
@@ -2249,7 +2232,7 @@ ${flux.raw}`).join("\n\n");
       const wrapped = wrapArchive(body, "live");
       const oldBlock = cand.validation.block;
       const raw = oldBlock ? cand.raw.slice(0, oldBlock.span[0]) + wrapped + cand.raw.slice(oldBlock.span[1]) : wrapped;
-      return this.toSummaryCandidate(raw, cand.round, cand.guidance);
+      return this.toSummaryCandidate(raw, cand.reasoning, cand.round, cand.guidance, cand.prompts);
     }
     /** 只有 y 仍是空白 assistant 才写入；正文变化时宁可失败也绝不覆盖。 */
     async applySummary(cand) {
@@ -2362,17 +2345,26 @@ ${flux.raw}`).join("\n\n");
       const op = this.beginGeneration(generationId, fallbackPhase);
       try {
         const prompts = assemblePrompt(this.orchestrationEntries(), { historicalContext, guidance });
-        const raw = await Promise.race([
+        const generated = splitGeneratedResponse(await Promise.race([
           this.deps.generateRaw({
             ordered_prompts: prompts,
             generation_id: generationId,
             connection_profile_id: this.config.timelineConnectionProfileId ?? void 0
           }),
           op.abortPromise
-        ]);
+        ]));
         if (this.activeGeneration !== op) throw new GenerationCancelledError();
         this.assertCurrentChat(chatEpoch);
-        const cand = this.toCandidate(raw, through, guidance, selection, sourceChars, provenance);
+        const cand = this.toCandidate(
+          generated.content,
+          generated.reasoning,
+          prompts,
+          through,
+          guidance,
+          selection,
+          sourceChars,
+          provenance
+        );
         this.releaseGeneration(op, "preview");
         return cand;
       } catch (err) {
@@ -2380,11 +2372,13 @@ ${flux.raw}`).join("\n\n");
         throw err;
       }
     }
-    toCandidate(raw, through, guidance, selection, sourceChars, provenance) {
+    toCandidate(raw, reasoning, prompts, through, guidance, selection, sourceChars, provenance) {
       const validation = validateArchive(raw);
       const body = validation.block?.inner ?? "";
       return {
         raw,
+        reasoning,
+        prompts,
         body,
         validation,
         containers: validation.containers,
@@ -2468,6 +2462,8 @@ ${flux.raw}`).join("\n\n");
       if (!repaired.changed) return { candidate: cand, fixes: [] };
       const next = this.toCandidate(
         repaired.text,
+        cand.reasoning,
+        cand.prompts,
         cand.through,
         cand.guidance,
         cand.selection,
@@ -2576,99 +2572,122 @@ ${flux.raw}`).join("\n\n");
     connectionProfiles() {
       return this.deps.getConnectionProfiles();
     }
-    /** 当前脚本内置提示词叠加 chat override 后的有效编排。 */
+    /** 当前脚本内置提示词叠加插件级 global override 后的有效编排。 */
     orchestrationEntries() {
-      return resolveOrchestration(this.config.orchestrationOverrides);
+      return resolveOrchestration(this.promptPreferences.timelineOverrides);
+    }
+    builtinOrchestrationEntry(id) {
+      return defaultOrchestration().find((entry) => entry.id === id);
     }
     /** 单模块是否自定义，以及它所基于的内置版之后是否已变化。 */
     orchestrationState(id) {
-      const override = this.config.orchestrationOverrides[id];
+      const override = this.promptPreferences.timelineOverrides[id];
       if (!override) return { customized: false, builtinUpdateAvailable: false };
       const builtin = defaultOrchestration().find((entry) => entry.id === id);
       return {
         customized: true,
-        builtinUpdateAvailable: !!builtin && override.baseHash !== promptFingerprint(builtin.content)
+        builtinUpdateAvailable: !!builtin && override.acknowledgedBuiltinHash !== promptFingerprint(builtin.content)
       };
     }
     promptOverrideSummary() {
-      const ids = Object.keys(this.config.orchestrationOverrides);
+      const ids = Object.keys(this.promptPreferences.timelineOverrides);
       return {
         customized: ids.length,
         updates: ids.filter((id) => this.orchestrationState(id).builtinUpdateAvailable).length
       };
     }
-    /** 保存一条用户覆盖；内容等于当前内置版时自动删除覆盖。 */
+    persistPromptPreferences() {
+      savePromptPreferences(this.deps, this.promptPreferences);
+    }
+    /** 保存一条全局用户覆盖；保存本身视为已确认当前内置版本。 */
     setOrchestrationOverride(id, content) {
+      if (!EDITABLE_TIMELINE_PROMPT_ID_SET.has(id)) return;
       const builtin = defaultOrchestration().find((entry) => entry.id === id);
       if (!builtin) return;
       if (content === builtin.content) {
-        delete this.config.orchestrationOverrides[id];
-        this.persistUserSetting();
+        delete this.promptPreferences.timelineOverrides[id];
+        this.persistPromptPreferences();
         return;
       }
-      const existing = this.config.orchestrationOverrides[id];
-      this.config.orchestrationOverrides[id] = {
+      this.promptPreferences.timelineOverrides[id] = {
         content,
-        // 只要仍在编辑同一覆盖项，就不能假装用户已经吸收了后来出现的内置新版。
-        baseHash: existing?.baseHash ?? promptFingerprint(builtin.content)
+        acknowledgedBuiltinHash: promptFingerprint(builtin.content)
       };
-      this.persistUserSetting();
+      this.persistPromptPreferences();
+    }
+    /** 保留自定义正文，只确认已看过当前内置版本。 */
+    acknowledgeOrchestrationBuiltin(id) {
+      const override = this.promptPreferences.timelineOverrides[id];
+      const builtin = defaultOrchestration().find((entry) => entry.id === id);
+      if (!override || !builtin) return;
+      override.acknowledgedBuiltinHash = promptFingerprint(builtin.content);
+      this.persistPromptPreferences();
     }
     resetOrchestrationOverride(id) {
-      if (!(id in this.config.orchestrationOverrides)) return;
-      delete this.config.orchestrationOverrides[id];
-      this.persistUserSetting();
+      if (!(id in this.promptPreferences.timelineOverrides)) return;
+      delete this.promptPreferences.timelineOverrides[id];
+      this.persistPromptPreferences();
     }
     resetAllOrchestrationOverrides() {
-      if (Object.keys(this.config.orchestrationOverrides).length === 0) return;
-      this.config.orchestrationOverrides = {};
-      this.persistUserSetting();
+      if (Object.keys(this.promptPreferences.timelineOverrides).length === 0) return;
+      this.promptPreferences.timelineOverrides = {};
+      this.persistPromptPreferences();
     }
     /** 兼容旧调用名；实际只写 override，不再改/存整份内置编排。 */
     updateOrchestration(id, content) {
       this.setOrchestrationOverride(id, content);
     }
-    /** 普通总结的固定三段式编排，叠加少量 chat override。 */
+    /** 普通总结的固定三段式编排，叠加插件级 global override。 */
     summaryOrchestrationEntries() {
-      return resolveSummaryOrchestration(this.config.summaryOrchestrationOverrides);
+      return resolveSummaryOrchestration(this.promptPreferences.summaryOverrides);
+    }
+    builtinSummaryOrchestrationEntry(id) {
+      return defaultSummaryOrchestration().find((entry) => entry.id === id);
     }
     summaryOrchestrationState(id) {
-      const override = this.config.summaryOrchestrationOverrides[id];
+      const override = this.promptPreferences.summaryOverrides[id];
       if (!override) return { customized: false, builtinUpdateAvailable: false };
       const builtin = defaultSummaryOrchestration().find((entry) => entry.id === id);
       return {
         customized: true,
-        builtinUpdateAvailable: !!builtin && override.baseHash !== summaryPromptFingerprint(builtin.content)
+        builtinUpdateAvailable: !!builtin && override.acknowledgedBuiltinHash !== summaryPromptFingerprint(builtin.content)
       };
     }
     summaryPromptOverrideSummary() {
-      const ids = Object.keys(this.config.summaryOrchestrationOverrides);
+      const ids = Object.keys(this.promptPreferences.summaryOverrides);
       return {
         customized: ids.length,
         updates: ids.filter((id) => this.summaryOrchestrationState(id).builtinUpdateAvailable).length
       };
     }
     setSummaryOrchestrationOverride(id, content) {
+      if (!EDITABLE_SUMMARY_PROMPT_ID_SET.has(id)) return;
       const builtin = defaultSummaryOrchestration().find((entry) => entry.id === id);
       if (!builtin) return;
       if (content === builtin.content) {
-        delete this.config.summaryOrchestrationOverrides[id];
-        this.persistUserSetting();
+        delete this.promptPreferences.summaryOverrides[id];
+        this.persistPromptPreferences();
         return;
       }
-      const existing = this.config.summaryOrchestrationOverrides[id];
-      this.config.summaryOrchestrationOverrides[id] = existing ? { content, baseHash: existing.baseHash } : makeSummaryOrchestrationOverride(content, builtin.content);
-      this.persistUserSetting();
+      this.promptPreferences.summaryOverrides[id] = makeSummaryOrchestrationOverride(content, builtin.content);
+      this.persistPromptPreferences();
+    }
+    acknowledgeSummaryOrchestrationBuiltin(id) {
+      const override = this.promptPreferences.summaryOverrides[id];
+      const builtin = defaultSummaryOrchestration().find((entry) => entry.id === id);
+      if (!override || !builtin) return;
+      override.acknowledgedBuiltinHash = summaryPromptFingerprint(builtin.content);
+      this.persistPromptPreferences();
     }
     resetSummaryOrchestrationOverride(id) {
-      if (!(id in this.config.summaryOrchestrationOverrides)) return;
-      delete this.config.summaryOrchestrationOverrides[id];
-      this.persistUserSetting();
+      if (!(id in this.promptPreferences.summaryOverrides)) return;
+      delete this.promptPreferences.summaryOverrides[id];
+      this.persistPromptPreferences();
     }
     resetAllSummaryOrchestrationOverrides() {
-      if (Object.keys(this.config.summaryOrchestrationOverrides).length === 0) return;
-      this.config.summaryOrchestrationOverrides = {};
-      this.persistUserSetting();
+      if (Object.keys(this.promptPreferences.summaryOverrides).length === 0) return;
+      this.promptPreferences.summaryOverrides = {};
+      this.persistPromptPreferences();
     }
     // ---- 提交决策 + 两段提交 -------------------------------------------------
     /**
@@ -2971,10 +2990,73 @@ ${flux.raw}`).join("\n\n");
   };
 
   // src/plugin/tavern.ts
-  function connectionManagerService() {
+  function record(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+  }
+  function stringValue(value) {
+    return typeof value === "string" ? value : "";
+  }
+  function joinTextParts(value, mode) {
+    if (typeof value === "string") return mode === "content" ? value : "";
+    if (!Array.isArray(value)) return "";
+    return value.flatMap((part) => {
+      const item = record(part);
+      if (!item) return [];
+      const type = stringValue(item.type).toLowerCase();
+      const isReasoning = type === "thinking" || type === "reasoning" || item.thought === true;
+      if (mode === "reasoning") {
+        if (!isReasoning && !("thinking" in item) && !("reasoning" in item)) return [];
+        const nestedThinking = Array.isArray(item.thinking) ? item.thinking.map((value2) => stringValue(record(value2)?.text)).filter(Boolean).join("\n\n") : "";
+        const text2 = stringValue(item.thinking) || nestedThinking || stringValue(item.reasoning) || stringValue(item.text);
+        return text2 ? [text2] : [];
+      }
+      if (isReasoning) return [];
+      const text = stringValue(item.text) || stringValue(item.content) || stringValue(item.output_text);
+      return text ? [text] : [];
+    }).join("\n\n");
+  }
+  function reasoningFromParts(value) {
+    if (!Array.isArray(value)) return "";
+    return value.flatMap((part) => {
+      const item = record(part);
+      if (!item?.thought) return [];
+      const text = stringValue(item.text);
+      return text ? [text] : [];
+    }).join("\n\n");
+  }
+  function normalizeGeneratedResponse(value) {
+    if (typeof value === "string") return { content: value, reasoning: "" };
+    const root = record(value);
+    if (!root) return { content: "", reasoning: "" };
+    const nested = record(root.data);
+    const directContent = stringValue(root.content) || joinTextParts(root.content, "content");
+    if (!directContent && nested) {
+      const unpacked = normalizeGeneratedResponse(nested);
+      if (unpacked.content || unpacked.reasoning) return unpacked;
+    }
+    const choice = Array.isArray(root.choices) ? record(root.choices[0]) : null;
+    const message = record(choice?.message) ?? record(root.message);
+    const responseContent = record(root.responseContent);
+    const candidate = Array.isArray(root.candidates) ? record(root.candidates[0]) : null;
+    const candidateContent = record(candidate?.content);
+    const content = directContent || stringValue(message?.content) || joinTextParts(message?.content, "content") || stringValue(choice?.text) || joinTextParts(responseContent?.parts, "content") || joinTextParts(candidateContent?.parts, "content") || stringValue(root.text) || stringValue(root.output_text);
+    const reasoning = stringValue(root.reasoning_content) || stringValue(root.reasoning) || stringValue(root.thinking) || stringValue(choice?.reasoning) || stringValue(message?.reasoning_content) || stringValue(message?.reasoning) || joinTextParts(message?.content, "reasoning") || reasoningFromParts(responseContent?.parts) || reasoningFromParts(candidateContent?.parts) || joinTextParts(root.content, "reasoning");
+    return { content, reasoning };
+  }
+  function tavernRuntimeContext() {
     const injected = globalThis.SillyTavern;
-    const context = typeof injected?.getContext === "function" ? injected.getContext() : injected;
-    return context?.ConnectionManagerRequestService ?? null;
+    return (typeof injected?.getContext === "function" ? injected.getContext() : injected) ?? null;
+  }
+  function connectionManagerService() {
+    return tavernRuntimeContext()?.ConnectionManagerRequestService ?? null;
+  }
+  function currentConnectionRawRuntime() {
+    const context = tavernRuntimeContext();
+    if (typeof context?.generateRawData !== "function" || typeof context.stopGeneration !== "function") return null;
+    return {
+      generateRawData: context.generateRawData.bind(context),
+      stopGeneration: context.stopGeneration.bind(context)
+    };
   }
   function getConnectionProfiles() {
     try {
@@ -3025,6 +3107,32 @@ ${flux.raw}`).join("\n\n");
   }
   function createTavernDeps() {
     const profileControllers = /* @__PURE__ */ new Map();
+    const currentConnectionRawGenerations = /* @__PURE__ */ new Map();
+    async function generateWithCurrentConnectionRawData(config, runtime) {
+      const generationId = config.generation_id ?? `memory-current-${Date.now()}`;
+      const previous = currentConnectionRawGenerations.get(generationId);
+      if (previous) {
+        try {
+          previous.stopGeneration();
+        } catch {
+        }
+      }
+      const token = Symbol(generationId);
+      currentConnectionRawGenerations.set(generationId, { token, stopGeneration: runtime.stopGeneration });
+      try {
+        const result = await runtime.generateRawData({
+          // createRawPrompt 会就地替换宏；传副本，避免篡改候选页保存的调试提示词。
+          prompt: config.ordered_prompts.map((prompt) => ({ ...prompt })),
+          // 明确不加 assistant prefill。
+          prefill: ""
+        });
+        return normalizeGeneratedResponse(result);
+      } finally {
+        if (currentConnectionRawGenerations.get(generationId)?.token === token) {
+          currentConnectionRawGenerations.delete(generationId);
+        }
+      }
+    }
     async function generateWithConnectionProfile(config, profileId) {
       const service = connectionManagerService();
       if (!service?.sendRequest) {
@@ -3048,8 +3156,7 @@ ${flux.raw}`).join("\n\n");
             includeInstruct: true
           }
         );
-        if (typeof result === "string") return result;
-        return String(result?.content ?? "");
+        return normalizeGeneratedResponse(result);
       } finally {
         if (profileControllers.get(generationId) === controller) {
           profileControllers.delete(generationId);
@@ -3066,22 +3173,45 @@ ${flux.raw}`).join("\n\n");
         if (config.connection_profile_id) {
           return generateWithConnectionProfile(config, config.connection_profile_id);
         }
+        const rawRuntime = currentConnectionRawRuntime();
+        if (rawRuntime) {
+          return generateWithCurrentConnectionRawData(config, rawRuntime);
+        }
         const nativeConfig = { ...config };
         delete nativeConfig.connection_profile_id;
         const out = await generateRaw(nativeConfig);
-        return typeof out === "string" ? out : String(out?.content ?? "");
+        return normalizeGeneratedResponse(out);
       },
       stopGenerationById: (id) => {
         const controller = profileControllers.get(id);
         controller?.abort();
         profileControllers.delete(id);
-        return stopGenerationById(id) || !!controller;
+        const rawGeneration = currentConnectionRawGenerations.get(id);
+        currentConnectionRawGenerations.delete(id);
+        let rawStopped = false;
+        if (rawGeneration) {
+          rawStopped = true;
+          try {
+            rawGeneration.stopGeneration();
+          } catch {
+          }
+        }
+        return stopGenerationById(id) || !!controller || rawStopped;
       },
       stopAllGeneration: () => {
         const hadProfiles = profileControllers.size > 0;
         for (const controller of profileControllers.values()) controller.abort();
         profileControllers.clear();
-        return stopAllGeneration() || hadProfiles;
+        const rawGeneration = currentConnectionRawGenerations.values().next().value;
+        const hadCurrentConnectionRaw = currentConnectionRawGenerations.size > 0;
+        currentConnectionRawGenerations.clear();
+        if (rawGeneration) {
+          try {
+            rawGeneration.stopGeneration();
+          } catch {
+          }
+        }
+        return stopAllGeneration() || hadProfiles || hadCurrentConnectionRaw;
       },
       getVariables: (option) => getVariables(option),
       insertOrAssignVariables: (variables, option) => {
@@ -3211,17 +3341,53 @@ ${flux.raw}`).join("\n\n");
 .wrap .msub .fullbtn{margin-left:auto;}
 .wrap .fullbtn{color:var(--mut);cursor:pointer;font-size:11px;padding:1px 6px;border:1px solid var(--line);border-radius:5px;transition:.14s;flex:0 0 auto;user-select:none;}
 .wrap .fullbtn:hover{color:var(--acc);border-color:var(--acc);}
+.wrap .mod-actions{display:inline-flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;min-width:0;}
 .wrap .ebar .fullbtn{margin-right:auto;}
 .wrap .modedit textarea{width:100%;height:62px;min-height:46px;resize:vertical;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--read);font:inherit;font-size:12px;line-height:1.6;padding:7px 9px;outline:0;}
 .wrap .modedit textarea:focus{border-color:var(--acc);}
 .wrap .runtime-summary{font-size:11px;line-height:1.65;color:var(--mut);background:var(--field);border:1px dashed var(--line);border-radius:7px;padding:7px 9px;}
 .wrap .runtime-summary b{color:var(--read);font-weight:500;}
+.wrap .debug-stack{display:flex;flex-direction:column;gap:8px;}
+.wrap .debug-stack .runtime-summary:not(:first-child){margin-top:8px;}
+.wrap .debug-empty{color:var(--faint);font-style:italic;}
+.wrap .prompt-global-note{font-size:10.5px;color:var(--faint);margin:-4px 2px 10px;line-height:1.6;}
+.wrap .prompt-update-card{margin:8px 0 1px;padding:10px 11px;border:1px solid var(--warn);border-radius:9px;background:var(--warn-soft);}
+.wrap .prompt-update-title{font-size:11.5px;color:var(--warn);font-weight:600;}
+.wrap .prompt-update-copy{font-size:10.5px;color:var(--mut);line-height:1.65;margin-top:3px;}
+.wrap .prompt-update-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px;}
+.wrap .prompt-action{appearance:none;-webkit-appearance:none;border:1px solid var(--line);border-radius:7px;background:var(--field);color:var(--ink2);font:inherit;font-size:10.5px;line-height:1.25;padding:6px 9px;cursor:pointer;transition:.14s;white-space:normal;text-align:center;}
+.wrap .prompt-action:hover{border-color:var(--acc);color:var(--acc);background:var(--acc-soft);}
+.wrap .prompt-action.keep{border-color:var(--warn);color:var(--warn);}
+.wrap .prompt-action.use{border-color:var(--acc);color:var(--acc);font-weight:600;}
+.wrap .prompt-compare{padding:14px 18px 18px;display:flex;flex-direction:column;gap:12px;flex:1 1 auto;min-height:0;overflow:auto;}
+.wrap .compare-intro{font-size:11px;line-height:1.7;color:var(--mut);padding:9px 11px;border-radius:9px;background:var(--warn-soft);border:1px solid var(--warn);}
+.wrap .compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0;flex:1 1 auto;}
+.wrap .compare-pane{display:flex;flex-direction:column;min-width:0;min-height:220px;border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden;}
+.wrap .compare-label{font-size:11px;color:var(--mut);padding:8px 11px;border-bottom:1px solid var(--line);background:var(--bg);}
+.wrap .compare-label b{color:var(--ink);font-weight:600;}
+.wrap .compare-text{padding:12px 13px;white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere;word-break:break-word;color:var(--read);font:12px/1.75 -apple-system,"PingFang SC",sans-serif;flex:1 1 auto;}
+.wrap .compare-footer{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;}
+@media (max-width:640px){
+  .wrap .top>.htitle{flex:1 1 0;}
+  .wrap .top>.htitle~.grow{display:none;}
+  .wrap .daynight .dn{padding:4px 8px;}
+  .wrap .promptsec>.grow{display:none;}
+  .wrap .promptcontrols{width:100%;flex:1 0 100%;justify-content:flex-end;flex-wrap:wrap;}
+  .wrap .promptcontrols .promptnotice{margin-right:auto;}
+  .wrap .mod-actions{width:100%;flex:1 0 100%;padding-top:3px;}
+  .wrap .prompt-update-actions{display:grid;grid-template-columns:1fr;}
+  .wrap .prompt-action{width:100%;padding:8px 9px;}
+  .wrap .compare-grid{grid-template-columns:1fr;}
+  .wrap .compare-pane{min-height:180px;}
+}
 .wrap .headact{font-size:10.5px;color:var(--mut);cursor:pointer;padding:1px 3px;white-space:nowrap;}
 .wrap .headact.saveact{color:var(--acc);font-weight:600;}
 /* 提示词全屏编辑：面板放大、大文本框铺满（用 vh 定高，避开百分比高度链断裂） */
 .wrap .panel.full{width:min(900px,calc(100vw - 32px));height:calc(100vh - 40px);height:calc(100dvh - 40px);max-width:none;max-height:900px;overflow:hidden;}
 .wrap .panel.full [data-el=view]{height:100%;min-height:0;display:flex;flex-direction:column;}
 .wrap .panel.full .top{flex:0 0 auto;}
+.wrap .full-update-slot{padding:10px 18px 0;flex:0 0 auto;}
+.wrap .full-update-slot .prompt-update-card{margin:0;}
 .wrap .fullwrap{padding:14px 18px 18px;flex:1 1 auto;min-height:0;}
 .wrap .fulltext{width:100%;height:100%;resize:none;border:1px solid var(--line);border-radius:10px;background:var(--field);color:var(--read);font:13px/1.85 -apple-system,"PingFang SC",sans-serif;padding:14px 16px;outline:0;}
 .wrap .fulltext:focus{border-color:var(--acc);}
@@ -3433,6 +3599,19 @@ ${flux.raw}`).join("\n\n");
   function esc(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+  function renderGenerationDebug(prompts, reasoning, content) {
+    const promptText = prompts.map((prompt, i) => `[${i + 1}] role=${prompt.role}
+${prompt.content}`).join("\n\n");
+    const reasoningText = reasoning || "（当前连接或模型未返回独立 reasoning）";
+    return `<div class="debug-stack">
+    <div class="runtime-summary"><b>实际发送的提示词</b></div>
+    <pre class="raw">${esc(promptText)}</pre>
+    <div class="runtime-summary"><b>模型 Reasoning（独立返回）</b></div>
+    <pre class="raw${reasoning ? "" : " debug-empty"}">${esc(reasoningText)}</pre>
+    <div class="runtime-summary"><b>模型最终正文（原始 content）</b></div>
+    <pre class="raw">${esc(content)}</pre>
+  </div>`;
+  }
   function label(title, time) {
     return esc([title, time].filter(Boolean).join(" | "));
   }
@@ -3541,6 +3720,8 @@ ${flux.raw}`).join("\n\n");
     let expandMod = null;
     let summaryExpandMod = null;
     let fullEdit = null;
+    let inlinePromptDraft = null;
+    let promptComparison = null;
     let showRetired = false;
     let candEditing = false;
     let summaryCandEditing = false;
@@ -3571,7 +3752,7 @@ ${flux.raw}`).join("\n\n");
       if (viewport.width <= 0 || viewport.height <= 0) return;
       const coarsePointer = panelWindow.matchMedia?.("(pointer: coarse)").matches ?? false;
       const mobile = viewport.width <= 640 || coarsePointer && viewport.height <= 600;
-      const fullDesktop = !!fullEdit && !mobile;
+      const fullDesktop = (!!fullEdit || !!promptComparison) && !mobile;
       const horizontalMargin = mobile ? 12 : fullDesktop ? 16 : viewport.width * 0.03;
       const verticalMargin = mobile ? 44 : fullDesktop ? 20 : viewport.height * 0.03;
       const maxWidth = fullDesktop ? 900 : 480;
@@ -3634,6 +3815,47 @@ ${flux.raw}`).join("\n\n");
       const start = hi < 0 ? entries.length : hi;
       const end = gi < 0 ? start - 1 : gi;
       return { pre: entries.slice(0, start), runtime: entries.slice(start, end + 1), post: entries.slice(end + 1) };
+    }
+    function promptState(scope, id) {
+      return scope === "summary" ? session.summaryOrchestrationState(id) : session.orchestrationState(id);
+    }
+    function inlinePromptValue(scope, id, fallback) {
+      return inlinePromptDraft?.scope === scope && inlinePromptDraft.id === id ? inlinePromptDraft.value : fallback;
+    }
+    function capturePromptDraft(scope, id) {
+      if (fullEdit?.scope === scope && fullEdit.id === id) {
+        const textarea2 = shadow.querySelector("[data-el=fulltext]");
+        const value = textarea2?.value ?? fullEdit.value;
+        fullEdit = { ...fullEdit, value };
+        return value;
+      }
+      const selector = scope === "summary" ? "textarea[data-soid]" : "textarea[data-oid]";
+      const textarea = [...shadow.querySelectorAll(selector)].find(
+        (element) => (scope === "summary" ? element.dataset.soid : element.dataset.oid) === id
+      );
+      if (textarea) {
+        inlinePromptDraft = { scope, id, value: textarea.value };
+        return textarea.value;
+      }
+      return inlinePromptDraft?.scope === scope && inlinePromptDraft.id === id ? inlinePromptDraft.value : null;
+    }
+    function clearInlinePromptDraft(scope, id) {
+      if (!inlinePromptDraft) return;
+      if (scope && inlinePromptDraft.scope !== scope) return;
+      if (id && inlinePromptDraft.id !== id) return;
+      inlinePromptDraft = null;
+    }
+    function promptUpdateCard(scope, id) {
+      if (!promptState(scope, id).builtinUpdateAvailable) return "";
+      return `<div class="prompt-update-card">
+      <div class="prompt-update-title">内置提示词已有新版</div>
+      <div class="prompt-update-copy">当前仍使用你的自定义版本。此选择适用于所有聊天；查看不会改变当前内容。</div>
+      <div class="prompt-update-actions">
+        <button type="button" class="prompt-action" data-act="prompt-view-builtin" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">查看内置新版</button>
+        <button type="button" class="prompt-action keep" data-act="prompt-keep-custom" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">继续使用我的版本</button>
+        <button type="button" class="prompt-action use" data-act="prompt-use-builtin" data-prompt-scope="${scope}" data-prompt-id="${esc(id)}">使用内置新版</button>
+      </div>
+    </div>`;
     }
     function rangeSources() {
       if (!snap) return [];
@@ -3766,7 +3988,7 @@ ${flux.raw}`).join("\n\n");
       const collected = snap ? session.collect(snap) : null;
       const promptSummary = session.promptOverrideSummary();
       const moduleEdit = (entries) => {
-        return `<div class="modedit">${entries.map((e) => `<textarea data-oid="${esc(e.id)}">${esc(e.content)}</textarea>`).join("")}</div>`;
+        return `<div class="modedit">${entries.map((e) => `<textarea data-oid="${esc(e.id)}">${esc(inlinePromptValue("archive", e.id, e.content))}</textarea>${promptUpdateCard("archive", e.id)}`).join("")}</div>`;
       };
       const moduleState = (entries) => {
         const states = entries.map((entry) => session.orchestrationState(entry.id));
@@ -3783,10 +4005,10 @@ ${flux.raw}`).join("\n\n");
       const moduleActions = (entries, modKey) => {
         if (expandMod !== modKey) return `<span class="pen">✎</span>`;
         const first = entries[0];
-        return `${first ? `<span class="fullbtn" data-act="full-open" data-oid="${esc(first.id)}" title="全屏编辑">⛶</span>` : ""}
-        ${first && session.orchestrationState(first.id).customized ? `<span class="headact" data-act="mod-reset" data-oid="${esc(first.id)}">恢复内置最新版</span>` : ""}
+        return `<span class="mod-actions">${first ? `<span class="fullbtn" data-act="full-open" data-oid="${esc(first.id)}" title="全屏编辑">⛶</span>` : ""}
+        ${first && session.orchestrationState(first.id).customized ? `<span class="headact" data-act="mod-reset" data-oid="${esc(first.id)}">使用内置最新版</span>` : ""}
         <span class="headact" data-act="mod-cancel">取消</span>
-        <span class="headact saveact" data-act="mod-save" data-mod="${modKey}">保存</span>`;
+        <span class="headact saveact" data-act="mod-save" data-mod="${modKey}">保存</span></span>`;
       };
       const preEdit = expandMod === "pre" ? moduleEdit(pre) : "";
       const postEdit = expandMod === "post" ? moduleEdit(post) : "";
@@ -3820,6 +4042,7 @@ ${flux.raw}`).join("\n\n");
         </div>
         <div class="promptsec"><div class="seclab">预设提示词与架构 · 铅笔编辑</div><span class="grow"></span>
           ${promptSummary.customized ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ""}<span class="promptreset" data-act="prompt-reset-all">全部使用内置最新版</span></span>` : '<span class="promptfollow">自动跟随内置最新版</span>'}</div>
+        <div class="prompt-global-note">提示词是插件级设置，保存后适用于所有聊天。</div>
         <div class="mods">
           <div class="mod" data-mod="pre">
             <div class="modhead" data-act="mod-toggle" data-mod="pre"><span class="mt">前置提示词</span>${moduleTags(pre)}<span class="grow"></span>${moduleActions(pre, "pre")}</div>
@@ -3858,12 +4081,12 @@ ${flux.raw}`).join("\n\n");
       const moduleActions = (entry, modKey) => {
         if (summaryExpandMod !== modKey) return '<span class="pen">✎</span>';
         const state = session.summaryOrchestrationState(entry.id);
-        return `<span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
-        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">恢复内置最新版</span>` : ""}
+        return `<span class="mod-actions"><span class="fullbtn" data-act="full-open" data-scope="summary" data-oid="${entry.id}" title="全屏编辑">⛶</span>
+        ${state.customized ? `<span class="headact" data-act="summary-mod-reset" data-oid="${entry.id}">使用内置最新版</span>` : ""}
         <span class="headact" data-act="summary-mod-cancel">取消</span>
-        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span>`;
+        <span class="headact saveact" data-act="summary-mod-save" data-mod="${modKey}">保存</span></span>`;
       };
-      const moduleEdit = (entry) => summaryExpandMod === entry.id ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(entry.content)}</textarea></div>` : "";
+      const moduleEdit = (entry) => summaryExpandMod === entry.id ? `<div class="modedit"><textarea data-soid="${entry.id}">${esc(inlinePromptValue("summary", entry.id, entry.content))}</textarea>${promptUpdateCard("summary", entry.id)}</div>` : "";
       const runtimeEdit = summaryExpandMod === "runtime" ? `<div class="modedit"><div class="runtime-summary">
           <div><b>Historical Context</b> 以下两类内容按顺序合并进同一个只读上下文</div>
           <div><b>World Archive</b> 全部完整在场档案${archiveFloors.length ? ` · 层 ${archiveFloors.join("、")}` : " · 无"}</div>
@@ -3889,6 +4112,7 @@ ${flux.raw}`).join("\n\n");
         <div class="promptsec"><div class="seclab">固定三段式提示词 · 铅笔编辑</div><span class="grow"></span>
           ${promptSummary.customized ? `<span class="promptcontrols">${promptSummary.updates ? '<span class="promptnotice">内置提示词有新版</span>' : ""}<span class="promptreset" data-act="summary-prompt-reset-all">全部使用内置最新版</span></span>` : '<span class="promptfollow">自动跟随内置最新版</span>'}
         </div>
+        <div class="prompt-global-note">提示词是插件级设置，保存后适用于所有聊天。</div>
         <div class="mods">
           <div class="mod" data-summary-mod="pre">
             <div class="modhead" data-act="summary-mod-toggle" data-mod="pre"><span class="mt">${esc(pre.label)}</span>${moduleTags("pre")}<span class="grow"></span>${moduleActions(pre, "pre")}</div>
@@ -4025,7 +4249,7 @@ ${flux.raw}`).join("\n\n");
         docHtml = `<textarea class="editdoc" data-el="editdoc">${esc(c.body)}</textarea>
         <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="edit-cancel">取消</span><span class="savem" data-act="edit-save">应用改动</span></div>`;
       } else if (mode === "debug") {
-        docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+        docHtml = renderGenerationDebug(c.prompts, c.reasoning, c.raw);
       } else {
         docHtml = `<div class="doc" data-act="edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
       }
@@ -4073,7 +4297,7 @@ ${flux.raw}`).join("\n\n");
         docHtml = `<textarea class="editdoc" data-el="summary-editdoc">${esc(c.body)}</textarea>
         <div class="ebar" style="margin-top:10px"><span class="cancel" data-act="summary-edit-cancel">取消</span><span class="savem" data-act="summary-edit-save">应用改动</span></div>`;
       } else if (summaryMode === "debug") {
-        docHtml = `<pre class="raw">${esc(c.raw)}</pre>`;
+        docHtml = renderGenerationDebug(c.prompts, c.reasoning, c.raw);
       } else {
         docHtml = `<div class="doc" data-act="summary-edit-doc" title="点档案任意处 · 直接编辑">${renderDoc(c.containers)}</div>`;
       }
@@ -4205,11 +4429,29 @@ ${flux.raw}`).join("\n\n");
     }
     function renderFullEdit() {
       const fe = fullEdit;
-      const state = fe.scope === "summary" ? session.summaryOrchestrationState(fe.id) : session.orchestrationState(fe.id);
+      const state = promptState(fe.scope, fe.id);
       const status = state.customized ? `<span class="prompttag custom">自定义</span>${state.builtinUpdateAvailable ? '<span class="prompttag update">内置有新版</span>' : ""}` : '<span class="prompttag">跟随内置</span>';
       return `
-      <div class="top"><span class="back" data-act="full-cancel" title="退出全屏">‹</span><span class="htitle">${esc(fe.label)}</span>${status}<span class="grow"></span>${state.customized ? '<span class="headact" data-act="full-reset">恢复内置最新版</span>' : ""}${dnToggle()}<span class="savem" data-act="full-save">保存</span></div>
+      <div class="top"><span class="back" data-act="full-cancel" title="退出全屏">‹</span><span class="htitle">${esc(fe.label)}</span>${status}<span class="grow"></span>${state.customized ? '<span class="headact" data-act="full-reset">使用内置最新版</span>' : ""}${dnToggle()}<span class="savem" data-act="full-save">保存</span></div>
+      ${state.builtinUpdateAvailable ? `<div class="full-update-slot">${promptUpdateCard(fe.scope, fe.id)}</div>` : ""}
       <div class="fullwrap"><textarea class="fulltext" data-el="fulltext" spellcheck="false">${esc(fe.value)}</textarea></div>`;
+    }
+    function renderPromptComparison() {
+      const comparison = promptComparison;
+      return `
+      <div class="top"><span class="back" data-act="prompt-compare-back" title="返回">‹</span><span class="htitle">${esc(comparison.label)} · 查看内置新版</span><span class="grow"></span>${dnToggle()}</div>
+      <div class="prompt-compare">
+        <div class="compare-intro">这里只读对照，不会改动你的自定义提示词。选择“继续使用我的版本”后，本次新版提示会在所有聊天中消失。</div>
+        <div class="compare-grid">
+          <section class="compare-pane"><div class="compare-label"><b>我的自定义版本</b> · ${comparison.customIsDraft ? "当前未保存草稿" : "当前实际使用"}</div><pre class="compare-text">${esc(comparison.customContent)}</pre></section>
+          <section class="compare-pane"><div class="compare-label"><b>内置新版</b> · 插件当前版本</div><pre class="compare-text">${esc(comparison.builtinContent)}</pre></section>
+        </div>
+        <div class="compare-footer">
+          <button type="button" class="prompt-action" data-act="prompt-compare-back">暂不处理</button>
+          <button type="button" class="prompt-action keep" data-act="prompt-keep-custom" data-prompt-scope="${comparison.scope}" data-prompt-id="${esc(comparison.id)}">继续使用我的版本</button>
+          <button type="button" class="prompt-action use" data-act="prompt-use-builtin" data-prompt-scope="${comparison.scope}" data-prompt-id="${esc(comparison.id)}">使用内置新版</button>
+        </div>
+      </div>`;
     }
     function render() {
       if (snap?.interrupted.length && view === "integrity") view = "hub";
@@ -4225,6 +4467,7 @@ ${flux.raw}`).join("\n\n");
         }
         view = "integrity";
         fullEdit = null;
+        promptComparison = null;
         expandMod = null;
         summaryExpandMod = null;
         editingIdx = null;
@@ -4236,8 +4479,17 @@ ${flux.raw}`).join("\n\n");
       if (view === "result" && !cand) view = "hub";
       if (view === "summary-result" && !summaryCand) view = "summary-setup";
       if (view === "detail" && detailStart == null) view = "timeline";
-      const surface = fullEdit ? "full-edit" : view;
+      const surface = promptComparison ? "prompt-comparison" : fullEdit ? "full-edit" : view;
       const surfaceChanged = surface !== renderedSurface;
+      if (promptComparison) {
+        panelEl.classList.add("full");
+        panelEl.classList.remove("result");
+        viewEl().innerHTML = renderPromptComparison();
+        if (surfaceChanged) panelEl.scrollTop = 0;
+        renderedSurface = surface;
+        layoutPanel();
+        return;
+      }
       if (fullEdit) {
         panelEl.classList.add("full");
         panelEl.classList.remove("result");
@@ -4605,6 +4857,7 @@ ${flux.raw}`).join("\n\n");
         const ta = el;
         session.setOrchestrationOverride(ta.dataset.oid, ta.value);
       });
+      clearInlinePromptDraft("archive");
       expandMod = null;
       flash = `${which === "pre" ? "前置" : "后置"}提示词已保存 ✓`;
       render();
@@ -4620,6 +4873,7 @@ ${flux.raw}`).join("\n\n");
         const textarea = element;
         session.setSummaryOrchestrationOverride(textarea.dataset.soid, textarea.value);
       });
+      clearInlinePromptDraft("summary");
       summaryExpandMod = null;
       flash = `${which === "pre" ? "前置定义" : "后置思考与输出"}已保存 ✓`;
       render();
@@ -4629,6 +4883,52 @@ ${flux.raw}`).join("\n\n");
           if (view === "summary-setup") render();
         }
       }, 1600);
+    }
+    function openPromptComparison(scope, id) {
+      const builtin = scope === "summary" ? session.builtinSummaryOrchestrationEntry(id) : session.builtinOrchestrationEntry(id);
+      const effective = scope === "summary" ? session.summaryOrchestrationEntries().find((entry) => entry.id === id) : session.orchestrationEntries().find((entry) => entry.id === id);
+      if (!builtin || !effective) return;
+      const capturedDraft = capturePromptDraft(scope, id);
+      const returnEdit = fullEdit?.scope === scope && fullEdit.id === id ? { ...fullEdit } : null;
+      const customContent = capturedDraft ?? effective.content;
+      promptComparison = {
+        scope,
+        id,
+        label: effective.label,
+        customContent,
+        customIsDraft: capturedDraft !== null && capturedDraft !== effective.content,
+        builtinContent: builtin.content,
+        returnEdit
+      };
+      fullEdit = null;
+      render();
+    }
+    function acknowledgePromptUpdate(scope, id) {
+      if (!promptComparison) capturePromptDraft(scope, id);
+      if (scope === "summary") session.acknowledgeSummaryOrchestrationBuiltin(id);
+      else session.acknowledgeOrchestrationBuiltin(id);
+      const returnEdit = promptComparison?.returnEdit ?? null;
+      promptComparison = null;
+      if (returnEdit) fullEdit = returnEdit;
+      flash = "已继续使用自定义版本；本次新版已确认 ✓";
+      render();
+    }
+    function useBuiltinPrompt(scope, id) {
+      if (scope === "summary") session.resetSummaryOrchestrationOverride(id);
+      else session.resetOrchestrationOverride(id);
+      promptComparison = null;
+      fullEdit = null;
+      clearInlinePromptDraft(scope, id);
+      if (scope === "summary") summaryExpandMod = null;
+      else expandMod = null;
+      flash = "已切换为内置最新版 ✓";
+      render();
+    }
+    function closePromptComparison() {
+      const returnEdit = promptComparison?.returnEdit ?? null;
+      promptComparison = null;
+      fullEdit = returnEdit;
+      render();
     }
     for (const sealedType of [
       "pointerdown",
@@ -4724,6 +5024,8 @@ ${flux.raw}`).join("\n\n");
           view = "hub";
           flash = "";
           expandMod = null;
+          summaryExpandMod = null;
+          clearInlinePromptDraft();
           editingIdx = null;
           doRefresh();
           render();
@@ -4763,6 +5065,7 @@ ${flux.raw}`).join("\n\n");
             `.modedit textarea[${scope === "summary" ? "data-soid" : "data-oid"}="${oid}"]`
           );
           fullEdit = { scope, id: oid, label: entry?.label ?? "提示词", value: ta?.value ?? entry?.content ?? "" };
+          clearInlinePromptDraft(scope, oid);
           flash = "";
           render();
           break;
@@ -4776,6 +5079,7 @@ ${flux.raw}`).join("\n\n");
               session.setOrchestrationOverride(fullEdit.id, ta.value);
             }
           }
+          if (fullEdit) clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
           fullEdit = null;
           flash = "提示词已保存 ✓";
           render();
@@ -4788,15 +5092,38 @@ ${flux.raw}`).join("\n\n");
             } else {
               session.resetOrchestrationOverride(fullEdit.id);
             }
+            clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
           }
           fullEdit = null;
           flash = "已恢复内置最新版 ✓";
           render();
           break;
         case "full-cancel":
+          if (fullEdit) clearInlinePromptDraft(fullEdit.scope, fullEdit.id);
           fullEdit = null;
           flash = "";
           render();
+          break;
+        case "prompt-view-builtin":
+          openPromptComparison(
+            el.dataset.promptScope === "summary" ? "summary" : "archive",
+            el.dataset.promptId
+          );
+          break;
+        case "prompt-keep-custom":
+          acknowledgePromptUpdate(
+            el.dataset.promptScope === "summary" ? "summary" : "archive",
+            el.dataset.promptId
+          );
+          break;
+        case "prompt-use-builtin":
+          useBuiltinPrompt(
+            el.dataset.promptScope === "summary" ? "summary" : "archive",
+            el.dataset.promptId
+          );
+          break;
+        case "prompt-compare-back":
+          closePromptComparison();
           break;
         case "cedit-save":
           void saveContainerEdit();
@@ -4838,6 +5165,7 @@ ${flux.raw}`).join("\n\n");
           view = "setup";
           flash = "";
           expandMod = null;
+          clearInlinePromptDraft();
           doRefresh();
           resetRangeSelection();
           render();
@@ -4846,6 +5174,7 @@ ${flux.raw}`).join("\n\n");
           view = "summary-setup";
           flash = "";
           summaryExpandMod = null;
+          clearInlinePromptDraft();
           doRefresh();
           render();
           break;
@@ -4919,15 +5248,18 @@ ${flux.raw}`).join("\n\n");
           break;
         case "mod-toggle": {
           const m = el.dataset.mod;
+          clearInlinePromptDraft("archive");
           expandMod = expandMod === m ? null : m;
           render();
           break;
         }
         case "mod-cancel":
+          clearInlinePromptDraft("archive");
           expandMod = null;
           render();
           break;
         case "mod-reset":
+          clearInlinePromptDraft("archive", el.dataset.oid);
           session.resetOrchestrationOverride(el.dataset.oid);
           flash = "已恢复内置最新版 ✓";
           render();
@@ -4937,6 +5269,7 @@ ${flux.raw}`).join("\n\n");
           break;
         case "prompt-reset-all":
           session.resetAllOrchestrationOverrides();
+          clearInlinePromptDraft("archive");
           expandMod = null;
           fullEdit = null;
           flash = "已全部使用内置最新版 ✓";
@@ -4944,15 +5277,18 @@ ${flux.raw}`).join("\n\n");
           break;
         case "summary-mod-toggle": {
           const mod = el.dataset.mod;
+          clearInlinePromptDraft("summary");
           summaryExpandMod = summaryExpandMod === mod ? null : mod;
           render();
           break;
         }
         case "summary-mod-cancel":
+          clearInlinePromptDraft("summary");
           summaryExpandMod = null;
           render();
           break;
         case "summary-mod-reset":
+          clearInlinePromptDraft("summary", el.dataset.oid);
           session.resetSummaryOrchestrationOverride(el.dataset.oid);
           flash = "已恢复内置最新版 ✓";
           render();
@@ -4962,6 +5298,7 @@ ${flux.raw}`).join("\n\n");
           break;
         case "summary-prompt-reset-all":
           session.resetAllSummaryOrchestrationOverrides();
+          clearInlinePromptDraft("summary");
           summaryExpandMod = null;
           fullEdit = null;
           flash = "已全部使用内置最新版 ✓";
@@ -5180,6 +5517,8 @@ ${flux.raw}`).join("\n\n");
       expandMod = null;
       summaryExpandMod = null;
       fullEdit = null;
+      inlinePromptDraft = null;
+      promptComparison = null;
       rangeThrough = null;
       flash = "";
       doRefresh();
@@ -5195,6 +5534,9 @@ ${flux.raw}`).join("\n\n");
       activeSummaryGenerationAttempt = null;
       failedSummaryGeneration = null;
       root.style.display = "none";
+      inlinePromptDraft = null;
+      promptComparison = null;
+      fullEdit = null;
       session.cancel();
       session.discard();
       session.discardSummary();
@@ -5286,7 +5628,8 @@ ${flux.raw}`).join("\n\n");
     let session;
     try {
       session = new ArchiverSession(deps, loadConfig(deps));
-      console.info(TAG2, CSS2, "会话已建（配置已读）");
+      session.promptPreferences = loadPromptPreferences(deps);
+      console.info(TAG2, CSS2, "会话已建（chat 配置与 global 提示词偏好已读）");
     } catch (e) {
       console.error("[记忆归档] 建会话失败：", e);
       return;
